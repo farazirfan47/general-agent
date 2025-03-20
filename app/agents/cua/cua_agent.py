@@ -8,7 +8,7 @@ from utils import (
 )
 import json
 from typing import Callable
-
+import datetime
 
 class CuaAgent:
     """
@@ -54,9 +54,7 @@ class CuaAgent:
                 # check if item["content"][0]["text"] is a question
                 if item["content"][0]["text"].endswith("?"):
                     user_clarification = input("\nQuestion: " + item["content"][0]["text"] + "\n")
-                    return [{"role": "assistant", "content": item["content"]},{"role": "user", "content": user_clarification}]
-                else:
-                    return [{"role": "assistant", "content": item["content"]}]
+                    return [{"role": "user", "content": user_clarification}]
 
         # TODO: function call handling
 
@@ -109,7 +107,7 @@ class CuaAgent:
         self.debug = debug
         self.show_images = show_images
         new_items = [
-            {"role": "system", "content": """
+            {"role": "system", "content": f"""
                 You are responsible for browsing and interacting with web pages in a sandboxed environment.
                 
                 OPERATION GUIDELINES:
@@ -130,7 +128,20 @@ class CuaAgent:
                 - Would making a reasonable assumption here significantly impact the final outcome?
                 - Is this information impossible to infer from previous context?
                 
-                YOUR LAST MESSAGE MUST BE A CONCISE SUMMARY OF THE CURRENT CONTEXT AND TASK AND WHAT YOU HAVE ACCOMPLISHED.        
+                INTERACTION BEST PRACTICES:
+                - Always clear input fields with Ctrl+A and Delete before entering text.
+                - After submitting with Enter, take an extra screenshot and move to the next field.
+                - Optimize by combining related actions when possible to reduce function calls.
+                - You can take actions on authenticated sites; assume the user is already authenticated.
+                - For black screens, click the center and take another screenshot.
+                - Read pages thoroughly by scrolling until sufficient information is gathered.
+                - Explain your actions and reasoning clearly.
+                - Break complex tasks into smaller steps.
+                - If a request implies needing external information, search for it directly.
+                - Zoom out or scroll to ensure all content is visible.
+        
+                DATE CONTEXT:
+                Today is {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         """}
         ]
 
@@ -155,6 +166,7 @@ class CuaAgent:
                 print(response)
                 raise ValueError("No output from model")
             else:
+                # concatenate new items
                 new_items += response["output"]
                 for item in response["output"]:
                     new_items += self.handle_item(item)

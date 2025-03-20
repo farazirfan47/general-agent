@@ -1,0 +1,1 @@
+# Redis Memory module for persistent storage of agent state and conversations 

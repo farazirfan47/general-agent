@@ -29,17 +29,27 @@ class ExecutorAgent:
         """
         
         # Prepare executor instructions using ReAct pattern
-        executor_instructions = f"""        
-        Current plan context:
+        executor_instructions = f"""
+        # EXECUTION CONTEXT
+        ## Plan Context
         {json.dumps(context, indent=2)}
-        
-        Current step to execute:
+
+        ## Current Step to Execute
         {json.dumps(step, indent=2)}
 
-        You have access to the following tools:
-        Web Search Tool: Good at searching the web for information.
-        Browser Tool (computer_use): Good at performing computer tasks in a sandboxed environment with full browser access.
-        
+        # AVAILABLE TOOLS
+        1. Web Search Tool - Use for: Finding current information, researching topics, locating resources
+        2. Browser Tool (computer_use) - Use for: Performing tasks in a browser environment, interacting with websites
+
+        # GUIDELINES FOR TOOL USAGE
+        ## When using computer_use tool:
+        - Provide comprehensive task descriptions that can stand alone
+        - Include relevant context from the conversation
+        - Clearly define the specific goal and expected outcome
+        - Specify exactly what should be done and any constraints
+        - Remember that the executing agent has no access to previous conversation
+
+        # OUTPUT FORMAT
         Please execute this step using the appropriate tools. When you're done, provide a summary of what you accomplished.
         """
         
@@ -55,15 +65,17 @@ class ExecutorAgent:
                 temperature=0
             )
 
+            memory["conversation"].append(response.output)
+
             # print("Response:")
             # print(response.output_text)
-            for message in response.output:
-                if message.type == "function_call":
-                    memory["conversation"].append({
-                        "role": "assistant",
-                        "content": response.output_text
-                    })
-                    break
+            # for message in response.output:
+            #     if message.type == "function_call":
+            #         memory["conversation"].append({   
+            #             "role": "assistant",
+            #             "content": response.output_text
+            #         })
+            #         break
 
             for message in response.output:
                 if message.type == "function_call":
@@ -75,35 +87,24 @@ class ExecutorAgent:
                         callback_message = self.create_function_call_result_message(tool_response, message.id)
                         memory["conversation"].append(callback_message)
                         print("Before recursive call to execute_step")
-                        print(memory["conversation"])
+                        # print(memory["conversation"])
                         # Recursive call to execute_step
                         print("Recursive call to execute_step")
-                        result = self.execute_step(step, context, memory)
+                        return self.execute_step(step, context, memory)
                 elif message.type == "web_search_call":
                     print(f"Executing web search")
                     result = response.output_text
                 else:
                     result = response.output_text
 
-                # elif message.type == "message":
-                #     result = message.
-            
-            # print(f"Step Result: {result}")
             return result
             
         except Exception as e:
             error_msg = f"Error executing step: {e}"
             print(error_msg)
             raise e
-            # # Return error information
-            # return {
-            #     "step": step.get("step"),
-            #     "description": step.get("description"),
-            #     "error": str(e),
-            #     "result": f"Failed to execute step: {str(e)}"
-            # }
 
-    def create_function_call_result_message(api_response, tool_call_id):
+    def create_function_call_result_message(self, api_response, tool_call_id):
         function_call_result_message = {
             "role": "tool",
             "content": json.dumps(api_response),
@@ -112,7 +113,7 @@ class ExecutorAgent:
         return function_call_result_message
 
 
-    def generate_final_response(self, context: Dict, memory: Dict) -> str:
+    def generate_final_response(self, context: Dict, conversation: List[Dict]) -> str:
         """
         Generate a final comprehensive response based on all step results
         
@@ -141,7 +142,7 @@ class ExecutorAgent:
             # Create response with GPT-4o for final summary
             response = self.client.responses.create(
                 model=self.model,
-                input=memory["conversation"],
+                input=conversation,
                 instructions=final_instructions,
                 temperature=0
             )
