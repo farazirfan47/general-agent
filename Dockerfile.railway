@@ -18,11 +18,12 @@ COPY . .
 # Create a directory for Redis data
 RUN mkdir -p /data/redis
 
-# Create a startup script
+# Create a startup script with proper environment variable handling
 RUN echo '#!/bin/bash\n\
 redis-server --appendonly yes --dir /data/redis &\n\
 sleep 2\n\
-uvicorn api:app --host 0.0.0.0 --port ${PORT:-8000}\n\
+PORT="${PORT:-8000}"\n\
+uvicorn api:app --host 0.0.0.0 --port $PORT\n\
 ' > /app/start.sh && chmod +x /app/start.sh
 
 # Expose the port the app runs on
