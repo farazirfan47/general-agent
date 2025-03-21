@@ -35,7 +35,7 @@ export const wsManager: WebSocketManager = {
         
         // Determine WebSocket URL
         const isNextDevServer = process.env.NODE_ENV === 'development';
-        let wsUrl;
+        let wsUrl: string;
         if (isNextDevServer) {
           wsUrl = actualSessionId === 'new' 
             ? `/ws/new` 
