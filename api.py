@@ -8,6 +8,8 @@ import uuid
 from app.agents.agent_loop import AgentLoop
 from app.memory.redis_memory import RedisMemory
 from app.events.event_bus import register_websocket_handler, register_event_handler
+import os
+from redis import Redis
 
 app = FastAPI()
 
@@ -25,6 +27,10 @@ active_connections: Dict[str, List[WebSocket]] = {}
 
 # Store running agent loops by session ID
 active_agents: Dict[str, AgentLoop] = {}
+
+# Get Redis URL from environment variable with a fallback for local development
+redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+redis_client = Redis.from_url(redis_url)
 
 class ChatRequest(BaseModel):
     message: str
