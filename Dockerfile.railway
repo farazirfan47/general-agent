@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 # Install Redis
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -18,16 +18,17 @@ COPY . .
 # Create a directory for Redis data
 RUN mkdir -p /data/redis
 
-# Create a startup script with proper environment variable handling
+# Create a startup script that properly handles the PORT environment variable
 RUN echo '#!/bin/bash\n\
 redis-server --appendonly yes --dir /data/redis &\n\
 sleep 2\n\
-PORT="${PORT:-8000}"\n\
-uvicorn api:app --host 0.0.0.0 --port $PORT\n\
+export PORT_NUMBER=${PORT:-8000}\n\
+echo "Starting uvicorn on port $PORT_NUMBER"\n\
+uvicorn api:app --host 0.0.0.0 --port $PORT_NUMBER\n\
 ' > /app/start.sh && chmod +x /app/start.sh
 
 # Expose the port the app runs on
 EXPOSE 8000
 
 # Command to run the application with Redis
-CMD ["/app/start.sh"] 
+CMD ["/bin/bash", "/app/start.sh"] 

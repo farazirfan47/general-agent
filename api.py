@@ -7,7 +7,7 @@ import asyncio
 import uuid
 from app.agents.agent_loop import AgentLoop
 from app.memory.redis_memory import RedisMemory
-from app.events.event_bus import register_websocket_handler, register_event_handler
+from app.events.event_bus import register_websocket_handler, register_event_handler, unregister_websocket_handler, list_websocket_handlers, clear_all_websocket_handlers
 import os
 from redis import Redis
 
@@ -32,6 +32,12 @@ active_agents: Dict[str, AgentLoop] = {}
 redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
 redis_client = Redis.from_url(redis_url)
 
+# Add this at the top level of your api.py, after imports
+clear_all_websocket_handlers()  # Clear any handlers from previous runs
+
+# At the top of your file, add a counter for debugging
+_websocket_connection_counter = 0
+
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
@@ -45,6 +51,18 @@ memory_manager = RedisMemory()
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
+    global _websocket_connection_counter
+    _websocket_connection_counter += 1
+    connection_id = _websocket_connection_counter
+    
+    print(f"[API] New WebSocket connection #{connection_id} for session: {session_id}")
+    list_websocket_handlers()
+    
+    # Clear all handlers on each new connection to ensure we start fresh
+    # This is a temporary solution until we properly fix the handler tracking
+    clear_all_websocket_handlers()
+    list_websocket_handlers()
+    
     await websocket.accept()
     
     # Initialize session_id if not provided
@@ -58,6 +76,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
     
     # Track connection status
     connection_active = True
+    
+    # Store the handler ID in the WebSocket object for later cleanup
+    websocket._handler_id = None
     
     try:
         # Send initial session information
@@ -79,7 +100,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
             nonlocal connection_active
             if not connection_active:
                 return
-                
+            
+            # Skip empty events
+            if data is None or (isinstance(data, dict) and len(data) == 0):
+                print(f"Skipping empty {event_type} event")
+                return
+            
             # Make sure data is serializable
             try:
                 # Always make a deep copy to avoid modifying the original data
@@ -120,6 +146,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
                 
                 # Convert to JSON and send
                 if connection_active:
+                    print(f"Sending {websocket_event_type} event: {websocket_data}")
                     await websocket.send_text(json.dumps({
                         "type": websocket_event_type,
                         "data": websocket_data
@@ -141,6 +168,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
         
         # Register the handler with the global event bus for WebSocket events
         handler_id = register_websocket_handler(websocket_event_handler)
+        websocket._handler_id = handler_id  # Store for cleanup
         
         # Handle incoming messages
         while True:
@@ -181,6 +209,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
             active_connections[session_id].remove(websocket)
             if not active_connections[session_id]:
                 del active_connections[session_id]
+        
+        # Unregister the WebSocket handler using the stored ID
+        if hasattr(websocket, '_handler_id') and websocket._handler_id:
+            unregister_websocket_handler(websocket._handler_id)
+            websocket._handler_id = None
     
     except Exception as e:
         try:
@@ -196,13 +229,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
         # Mark connection as inactive in case we exit the loop for any reason
         connection_active = False
         
-        # Clean up event handler registration if needed
-        # Assuming your event bus has a way to unregister handlers
+        # Clean up event handler registration
         try:
-            if 'handler_id' in locals():
-                # If your event_bus has an unregister function, uncomment this
-                # unregister_websocket_handler(handler_id)
-                pass
+            if hasattr(websocket, '_handler_id') and websocket._handler_id:
+                unregister_websocket_handler(websocket._handler_id)
+                websocket._handler_id = None
         except:
             pass
 

@@ -1,3 +1,5 @@
+import { WS_URL } from '../config/api';
+
 type WebSocketCallback = (event: any) => void;
 
 interface WebSocketManager {
@@ -18,70 +20,85 @@ export const wsManager: WebSocketManager = {
   eventListeners: new Map(),
 
   // Connect to WebSocket server
-  connect: (sessionId = 'new') => {
+  connect: async (sessionId?: string): Promise<string> => {
     return new Promise((resolve, reject) => {
       try {
-        // Check if we're in a browser environment
-        if (typeof window === 'undefined') {
-          reject(new Error('WebSocket can only be used in browser environment'));
-          return;
-        }
-
-        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        const host = window.location.host;
-        const url = `${protocol}://${host}/ws/${sessionId}`;
+        // Use 'new' as default if sessionId is undefined
+        const actualSessionId = sessionId || 'new';
         
         // Close existing connection if any
         if (wsManager.socket) {
+          console.log("Closing existing WebSocket connection before creating a new one");
           wsManager.socket.close();
+          wsManager.socket = null;
         }
         
-        // Create new WebSocket connection
-        wsManager.socket = new WebSocket(url);
+        // Determine WebSocket URL
+        const isNextDevServer = process.env.NODE_ENV === 'development';
+        let wsUrl;
+        if (isNextDevServer) {
+          wsUrl = actualSessionId === 'new' 
+            ? `/ws/new` 
+            : `/ws/${actualSessionId}`;
+        } else {
+          wsUrl = actualSessionId === 'new' 
+            ? `${WS_URL}/ws/new` 
+            : `${WS_URL}/ws/${actualSessionId}`;
+        }
         
-        // Setup event handlers
-        wsManager.socket.onopen = () => {
-          console.log('WebSocket connected');
-        };
+        console.log(`Connecting to WebSocket at ${wsUrl}`);
         
-        wsManager.socket.onclose = () => {
-          console.log('WebSocket disconnected');
-        };
-        
-        wsManager.socket.onerror = (error) => {
-          console.error('WebSocket error:', error);
-          reject(error);
-        };
-        
-        // Handle incoming messages
-        wsManager.socket.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            
-            // Handle session initialization
-            if (data.type === 'session_info' && data.data.session_id) {
-              wsManager.sessionId = data.data.session_id;
-              resolve(data.data.session_id);
-            }
-            
-            // Notify all registered listeners for this event type
-            const listeners = wsManager.eventListeners.get(data.type) || [];
-            listeners.forEach(callback => callback(data.data));
-            
-            // Notify 'all' event listeners
-            const allListeners = wsManager.eventListeners.get('all') || [];
-            allListeners.forEach(callback => callback(data));
-          } catch (error) {
-            console.error('Error processing WebSocket message:', error);
-          }
-        };
-        
-        // If we don't get a session_info within 5 seconds, reject
+        // Add a small delay before creating a new connection
         setTimeout(() => {
-          if (!wsManager.sessionId) {
-            reject(new Error('WebSocket connection timeout'));
-          }
-        }, 5000);
+          // Create new WebSocket connection
+          const ws = new WebSocket(wsUrl);
+          wsManager.socket = ws;
+          
+          // Setup event handlers
+          ws.onopen = () => {
+            console.log('WebSocket connected');
+          };
+          
+          ws.onclose = () => {
+            console.log('WebSocket disconnected');
+            wsManager.socket = null; // Clear the socket reference
+          };
+          
+          ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            reject(error);
+          };
+          
+          // Handle incoming messages
+          ws.onmessage = (event) => {
+            try {
+              const data = JSON.parse(event.data);
+              
+              // Handle session initialization
+              if (data.type === 'session_info' && data.data.session_id) {
+                wsManager.sessionId = data.data.session_id;
+                resolve(data.data.session_id);
+              }
+              
+              // Notify all registered listeners for this event type
+              const listeners = wsManager.eventListeners.get(data.type) || [];
+              listeners.forEach(callback => callback(data.data));
+              
+              // Notify 'all' event listeners
+              const allListeners = wsManager.eventListeners.get('all') || [];
+              allListeners.forEach(callback => callback(data));
+            } catch (error) {
+              console.error('Error processing WebSocket message:', error);
+            }
+          };
+          
+          // If we don't get a session_info within 5 seconds, reject
+          setTimeout(() => {
+            if (!wsManager.sessionId) {
+              reject(new Error('WebSocket connection timeout'));
+            }
+          }, 5000);
+        }, 100); // Small delay to ensure previous connection is fully closed
       } catch (error) {
         reject(error);
       }
@@ -105,6 +122,20 @@ export const wsManager: WebSocketManager = {
       }));
     } else {
       console.error('WebSocket not connected');
+      // Try to reconnect and then send the message
+      wsManager.connect(wsManager.sessionId || undefined)
+        .then(() => {
+          // Wait a moment for the connection to establish
+          setTimeout(() => {
+            if (wsManager.socket && wsManager.socket.readyState === WebSocket.OPEN) {
+              wsManager.socket.send(JSON.stringify({
+                type: 'message',
+                message,
+              }));
+            }
+          }, 500);
+        })
+        .catch(err => console.error('Failed to reconnect WebSocket:', err));
     }
   },
 

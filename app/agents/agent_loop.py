@@ -76,11 +76,10 @@ class AgentLoop:
         if plan_data.get("clarification_needed", False):
             clarifying_questions = plan_data.get("clarifying_questions", [])
             
-            # Emit event for clarification
-            await emit_event_async("clarification", {"questions": clarifying_questions})
+            # Create a proper message for the clarification
+            assistant_message = "I need some clarification: " + " ".join(clarifying_questions)
             
             # Store the assistant message asking for clarification
-            assistant_message = "I need some clarification: " + " ".join(clarifying_questions)
             self.memory_manager.add_assistant_message(self.session_id, assistant_message)
             
             # If in interactive terminal mode, get input directly

@@ -4,6 +4,7 @@ import ChatMessage from './ChatMessage';
 import ChatInput from './ChatInput';
 import StatusIndicator from './StatusIndicator';
 import { wsManager, WebSocketEventType } from '@/lib/websocket';
+import { WS_URL, API_URL } from '../config/api';
 
 interface Message {
   role: 'user' | 'assistant' | 'system';
@@ -110,7 +111,7 @@ const Chat: React.FC = () => {
   // Fetch conversation history for an existing session
   const fetchConversationHistory = async (sessionId: string) => {
     try {
-      const response = await fetch(`/api/conversation/${sessionId}`);
+      const response = await fetch(`${API_URL}/api/conversation/${sessionId}`);
       if (!response.ok) throw new Error('Failed to fetch conversation history');
       
       const data = await response.json();
@@ -170,8 +171,14 @@ const Chat: React.FC = () => {
     wsManager.sendMessage(message);
   };
   
-  // Add a new status update
+  // Add a new status update - with validation to prevent empty updates
   const addStatusUpdate = ({ type, message, details }: { type: StatusUpdate['type'], message: string, details: any }) => {
+    // Skip empty or meaningless updates
+    if (!message || message.trim() === '') {
+      console.log("Skipping empty status update");
+      return;
+    }
+    
     const update: StatusUpdate = {
       id: Math.random().toString(36).substring(2, 9),
       type,
@@ -183,8 +190,13 @@ const Chat: React.FC = () => {
     setStatusUpdates(prev => [...prev, update]);
   };
   
-  // Event handlers
+  // Event handlers with validation
   const handleThinkingEvent = (data: any) => {
+    // Skip if data is empty or has no message
+    if (!data || !data.message || data.message.trim() === '') {
+      return;
+    }
+    
     addStatusUpdate({
       type: 'thinking',
       message: data.message || 'Thinking...',
@@ -270,6 +282,12 @@ const Chat: React.FC = () => {
   };
   
   const handleCuaEvent = (data: any) => {
+    // Skip empty events
+    if (!data) {
+      console.log("Skipping empty CUA event");
+      return;
+    }
+    
     // Check if there's a stream URL in the data (should be at the top level)
     if (data.stream_url && !browserStreamUrl) {
       console.log("Setting browser stream URL:", data.stream_url);
@@ -286,6 +304,12 @@ const Chat: React.FC = () => {
         message: "Browser session initialized",
         details: data
       });
+      return;
+    }
+    
+    // Skip events with no action or empty action
+    if (!data.action || data.action.trim() === '') {
+      console.log("Skipping CUA event with no action");
       return;
     }
     
@@ -423,15 +447,33 @@ const Chat: React.FC = () => {
   
   // Handle clarification event
   const handleClarificationEvent = (data: any) => {
+    // Skip if data is empty or has no message
+    if (!data || (!data.message && !data.questions)) {
+      console.log("Skipping empty clarification event");
+      return;
+    }
+    
+    // Construct a meaningful message from the questions if message is not provided
+    let clarificationMessage = data.message || "";
+    
+    // If there's no message but there are questions, create a message from the questions
+    if (!clarificationMessage && data.questions && data.questions.length > 0) {
+      clarificationMessage = "I need some clarification:\n\n" + 
+        data.questions.map((q: string, i: number) => `${i+1}. ${q}`).join("\n");
+    }
+    
     // Add assistant message asking for clarification
     const assistantMessage: Message = {
       role: 'assistant',
-      content: data.message,
+      content: clarificationMessage,
       timestamp: new Date()
     };
     
     setMessages(prev => [...prev, assistantMessage]);
     setIsProcessing(false);
+    
+    // Clear status updates after adding the clarification message
+    setStatusUpdates([]);
   };
   
   // Get shareable link for this conversation
@@ -449,6 +491,19 @@ const Chat: React.FC = () => {
   const handleNewChat = () => {
     // Redirect to new session
     router.push('/?session=new');
+  };
+  
+  // Update the WebSocket connection to use the environment variable
+  const connectWebSocket = (sessionId: string) => {
+    // Use the environment-specific WebSocket URL
+    const wsUrl = sessionId === 'new' 
+      ? `${WS_URL}/ws/new` 
+      : `${WS_URL}/ws/${sessionId}`;
+      
+    console.log(`Connecting to WebSocket at ${wsUrl}`);
+    const ws = new WebSocket(wsUrl);
+    
+    // ... rest of your WebSocket setup code
   };
   
   return (
