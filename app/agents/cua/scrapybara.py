@@ -1,8 +1,9 @@
 import os
 import time
+import asyncio
 from dotenv import load_dotenv
 from scrapybara import Scrapybara
-from playwright.sync_api import sync_playwright, Browser, Page
+from playwright.async_api import async_playwright, Browser, Page
 from utils import BLOCKED_DOMAINS
 
 load_dotenv()
@@ -44,8 +45,32 @@ class ScrapybaraBrowser:
         self._playwright = None
         self._browser: Browser | None = None
         self._page: Page | None = None
+        self.instance = None
+        self.stream_url = None
 
     def __enter__(self):
+        # For synchronous context manager support
+        self.instance = self.client.start_browser(blocked_domains=[
+            domain.replace("https://", "").replace("www.", "")
+            for domain in BLOCKED_DOMAINS
+        ])
+        print("Scrapybara browser started ₍ᐢ•(ܫ)•ᐢ₎")
+        self.stream_url = self.instance.get_stream_url().stream_url
+        print(
+            f"You can view and interact with the stream at {self.stream_url}"
+        )
+        
+        # Note: We're not setting up Playwright here since it requires async
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # For synchronous context manager support
+        print("Stopping scrapybara browser")
+        if self.instance:
+            self.instance.stop()
+        print("Scrapybara browser stopped ₍ᐢ-(ｪ)-ᐢ₎")
+
+    async def __aenter__(self):
         print("Starting scrapybara browser")
         blocked_domains = [
             domain.replace("https://", "").replace("www.", "")
@@ -53,26 +78,37 @@ class ScrapybaraBrowser:
         ]
         self.instance = self.client.start_browser(blocked_domains=blocked_domains)
         print("Scrapybara browser started ₍ᐢ•(ܫ)•ᐢ₎")
+        self.stream_url = self.instance.get_stream_url().stream_url
         print(
-            f"You can view and interact with the stream at {self.instance.get_stream_url().stream_url}"
+            f"You can view and interact with the stream at {self.stream_url}"
         )
-        self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.connect_over_cdp(
+        
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.chromium.connect_over_cdp(
             self.instance.get_cdp_url().cdp_url
         )
         self._page = self._browser.contexts[0].pages[0]
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
         print("Stopping scrapybara browser")
-        self.instance.stop()
+        if self._browser:
+            await self._browser.close()
+        if self._playwright:
+            await self._playwright.stop()
+        if self.instance:
+            self.instance.stop()
         print("Scrapybara browser stopped ₍ᐢ-(ｪ)-ᐢ₎")
 
-    def goto(self, url: str) -> None:
-        self._page.goto(url)
+    async def goto(self, url: str) -> None:
+        await self._page.goto(url)
 
     def get_current_url(self) -> str:
         return self.instance.get_current_url().current_url
+
+    def get_stream_url(self) -> str:
+        """Return the URL to the live stream"""
+        return self.stream_url
 
     def screenshot(self) -> str:
         return self.instance.screenshot().base_64_image
@@ -118,6 +154,7 @@ class ScrapybaraBrowser:
         mapped_keys = [
             CUA_KEY_TO_SCRAPYBARA_KEY.get(key.lower(), key.lower()) for key in keys
         ]
+        print(f"Mapping keys: {keys} to {mapped_keys}")
         self.instance.computer(action="press_key", keys=mapped_keys)
 
     def drag(self, path: list[dict[str, int]]) -> None:
@@ -137,6 +174,7 @@ class ScrapybaraUbuntu:
         self.client = Scrapybara(api_key=os.getenv("SCRAPYBARA_API_KEY"))
         self.environment = "linux"  # "windows", "mac", "linux", or "browser"
         self.dimensions = (1024, 768)
+        self.stream_url = None
 
     def __enter__(self):
         print("Starting Scrapybara Ubuntu instance")
@@ -146,8 +184,9 @@ class ScrapybaraUbuntu:
         ]
         self.instance = self.client.start_ubuntu(blocked_domains=blocked_domains)
         print("Scrapybara Ubuntu instance started ₍ᐢ•(ܫ)•ᐢ₎")
+        self.stream_url = self.instance.get_stream_url().stream_url
         print(
-            f"You can view and interact with the stream at {self.instance.get_stream_url().stream_url}"
+            f"You can view and interact with the stream at {self.stream_url}"
         )
         return self
 
@@ -155,6 +194,10 @@ class ScrapybaraUbuntu:
         print("Stopping Scrapybara Ubuntu instance")
         self.instance.stop()
         print("Scrapybara Ubuntu instance stopped ₍ᐢ-(ｪ)-ᐢ₎")
+
+    def get_stream_url(self) -> str:
+        """Return the URL to the live stream"""
+        return self.stream_url
 
     def screenshot(self) -> str:
         return self.instance.screenshot().base_64_image

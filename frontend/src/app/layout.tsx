@@ -13,8 +13,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>
-        {children}
+      <body className="antialiased">
+        <div className="flex h-screen bg-gray-200 w-full flex-col text-stone-900">
+          <main>{children}</main>
+        </div>
       </body>
     </html>
   );

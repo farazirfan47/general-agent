@@ -135,6 +135,7 @@ export enum WebSocketEventType {
   Step = 'step',
   ToolUsage = 'tool_usage',
   CuaEvent = 'cua_event',
+  CuaReasoning = 'cua_reasoning',
   Executing = 'executing',
   ExecutingStep = 'executing_step',
   Complete = 'complete',

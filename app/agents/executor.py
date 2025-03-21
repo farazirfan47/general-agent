@@ -1,8 +1,9 @@
 import os
 import json
 import time
-from typing import Dict, List, Any, Optional
-from openai import OpenAI
+import asyncio
+from typing import Dict, List, Any, Optional, Callable
+from openai import OpenAI, AsyncOpenAI
 from tools.cua_tool import cua_tool
 from tool_handling import handle_cua_request
 
@@ -14,8 +15,24 @@ class ExecutorAgent:
     def __init__(self):
         self.model = "gpt-4o"
         self.client = OpenAI()
+        self.async_client = AsyncOpenAI()
         
-    def execute_step(self, step: Dict, context: Dict, memory: Dict) -> Dict:
+    def execute_step(self, step: Dict, context: Dict, memory: Dict, emit_event_async: Optional[Callable] = None) -> Dict:
+        """
+        Synchronous wrapper around execute_step_async
+        
+        Args:
+            step: The current step to execute
+            context: The current execution context including previous steps
+            memory: The memory state from previous steps
+            emit_event_async: Function to emit socket events directly
+            
+        Returns:
+            Dict containing the step execution result
+        """
+        return asyncio.run(self.execute_step_async(step, context, memory, emit_event_async))
+    
+    async def execute_step_async(self, step: Dict, context: Dict, memory: Dict, emit_event_async: Optional[Callable] = None) -> Dict:
         """
         Execute a single step of the plan using the ReAct pattern
         
@@ -23,6 +40,7 @@ class ExecutorAgent:
             step: The current step to execute
             context: The current execution context including previous steps
             memory: The memory state from previous steps
+            emit_event_async: Function to emit socket events directly
             
         Returns:
             Dict containing the step execution result
@@ -56,8 +74,8 @@ class ExecutorAgent:
         try:            
             # Initialize step result
             result = ""
-            # Execute the step
-            response = self.client.responses.create(
+            # Execute the step asynchronously
+            response = await self.async_client.responses.create(
                 model=self.model,
                 input=memory["conversation"],
                 instructions=executor_instructions,
@@ -65,32 +83,53 @@ class ExecutorAgent:
                 temperature=0
             )
 
-            memory["conversation"].append(response.output)
-
-            # print("Response:")
-            # print(response.output_text)
-            # for message in response.output:
-            #     if message.type == "function_call":
-            #         memory["conversation"].append({   
-            #             "role": "assistant",
-            #             "content": response.output_text
-            #         })
-            #         break
+            # check if we have a function call in the response via loop
+            function_call = False
+            for message in response.output:
+                if message.type == "function_call":
+                    function_call = True
+                    break
+            
+            if function_call == False:
+                memory["conversation"].append(response.output)
+            else:
+                # loop through the response.output and convert class object to a dictionary and then create a full list and add it to the conversation
+                for message in response.output:
+                    message = message.__dict__
+                    memory["conversation"].append(message)
 
             for message in response.output:
                 if message.type == "function_call":
-                    tool_call_name = message.name
+                    tool_name = message.name
                     args = json.loads(message.arguments)
-                    if tool_call_name == "computer_use":
+                    
+                    # Emit tool usage event directly
+                    if emit_event_async:
+                        await emit_event_async("tool_usage", {"tool": tool_name, "args": args})
+                    
+                    if tool_name == "computer_use":
                         print(f"Executing CUA request: {args['task']}")
-                        tool_response = handle_cua_request(args["task"])
-                        callback_message = self.create_function_call_result_message(tool_response, message.id)
+                        
+                        # Emit computer use specific event with task info
+                        if emit_event_async:
+                            # Create event data with the task
+                            cua_event_data = {"task": args.get("task", "")}
+                            # Emit the event
+                            await emit_event_async("cua_event", cua_event_data)
+                        
+                        # Handle CUA request by passing the event emitter directly to handle_cua_request
+                        # This eliminates the need for intermediate callbacks
+                        tool_response = await handle_cua_request(args["task"], emit_event_async)
+
+                        print("Successfully executed CUA request, Outside the function")
+                        
+                        # Add the response to the conversation
+                        callback_message = self.create_function_call_result_message(tool_response, message.call_id)
                         memory["conversation"].append(callback_message)
-                        print("Before recursive call to execute_step")
-                        # print(memory["conversation"])
-                        # Recursive call to execute_step
-                        print("Recursive call to execute_step")
-                        return self.execute_step(step, context, memory)
+                        result = tool_response
+                        
+                        # Recursive call to execute_step_async to continue processing
+                        # return await self.execute_step_async(step, context, memory, emit_event_async)
                 elif message.type == "web_search_call":
                     print(f"Executing web search")
                     result = response.output_text
@@ -103,27 +142,17 @@ class ExecutorAgent:
             error_msg = f"Error executing step: {e}"
             print(error_msg)
             raise e
-
+            
     def create_function_call_result_message(self, api_response, tool_call_id):
         function_call_result_message = {
-            "role": "tool",
-            "content": json.dumps(api_response),
-            "tool_call_id": tool_call_id
+            "type": "function_call_output",
+            "output": json.dumps(api_response),
+            "call_id": tool_call_id
         }
         return function_call_result_message
-
-
-    def generate_final_response(self, context: Dict, conversation: List[Dict]) -> str:
-        """
-        Generate a final comprehensive response based on all step results
+    
+    async def generate_final_response_async(self, context: Dict, conversation: List[Dict]) -> str:
         
-        Args:
-            context: The execution context with all completed steps
-            memory: The memory state from all previous steps
-            
-        Returns:
-            Final response text
-        """
         final_instructions = """
         You are generating a final, comprehensive response to the user based on all completed steps.
         Synthesize the results from all steps into a coherent, well-structured response.
@@ -139,8 +168,8 @@ class ExecutorAgent:
         """
         
         try:
-            # Create response with GPT-4o for final summary
-            response = self.client.responses.create(
+            # Create response with GPT-4o for final summary asynchronously
+            response = await self.async_client.responses.create(
                 model=self.model,
                 input=conversation,
                 instructions=final_instructions,

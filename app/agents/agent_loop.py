@@ -1,10 +1,12 @@
 import os
 import json
 import time
-from typing import Dict, List, Any, Optional
+import asyncio
+from typing import Dict, List, Any, Optional, Callable
 from app.agents.planner import PlannerAgent
 from app.agents.executor import ExecutorAgent
 from app.memory.redis_memory import RedisMemory
+from app.events.event_bus import emit_event_async
 
 class AgentLoop:
     """
@@ -28,13 +30,27 @@ class AgentLoop:
     
     def run(self, user_query: str) -> str:
         """
-        Process a user query through the complete agent workflow
+        Synchronous wrapper around run_async
         
         Args:
             user_query: The user's query or request
             
         Returns:
             Final response text
+        """
+        # Use asyncio.run to run the async method in a sync context
+        return asyncio.run(self.run_async(user_query, interactive_clarification=True))
+    
+    async def run_async(self, user_query: str, interactive_clarification: bool = False) -> str:
+        """
+        Process a user query through the complete agent workflow
+        
+        Args:
+            user_query: The user's query or request
+            interactive_clarification: If True, handle clarifications interactively, otherwise return early
+            
+        Returns:
+            Final response text or "Clarification needed" if clarification is required in non-interactive mode
         """
         print("\n=== Starting New Query ===")
         print(f"User Query: {user_query}")
@@ -44,50 +60,91 @@ class AgentLoop:
         self.memory_manager.update_state(self.session_id, {"original_query": user_query})
         self.memory_manager.add_user_message(self.session_id, user_query)
         
+        # await emit_event_async("thinking", {"message": "Processing your request..."})
+        
         # Get conversation history for context
         conversation = self.memory_manager.get_conversation(self.session_id)
         
         # Get plan from the Planner
+        await emit_event_async("thinking", {"message": "Creating plan..."})
+
+        print("Conversations before plan: ", conversation)
+
         plan_data = self.planner.create_plan(conversation)
         
         # Check if clarification is needed
-        while plan_data.get("clarification_needed", False):
+        if plan_data.get("clarification_needed", False):
             clarifying_questions = plan_data.get("clarifying_questions", [])
             
-            print("\n=== Clarification Needed ===")
-            for i, question in enumerate(clarifying_questions, 1):
-                print(f"{i}. {question}")
+            # Emit event for clarification
+            await emit_event_async("clarification", {"questions": clarifying_questions})
             
-            user_clarification = input("\nPlease provide clarifications: ")
-            
-            # Store the clarification
+            # Store the assistant message asking for clarification
             assistant_message = "I need some clarification: " + " ".join(clarifying_questions)
             self.memory_manager.add_assistant_message(self.session_id, assistant_message)
-            self.memory_manager.add_user_message(self.session_id, user_clarification)
             
-            # Refresh conversation history
-            conversation = self.memory_manager.get_conversation(self.session_id)
-            
-            # Update the plan with clarification - now just call create_plan again with updated conversation
-            plan_data = self.planner.create_plan(conversation)
+            # If in interactive terminal mode, get input directly
+            if interactive_clarification:
+                # Interactive clarification mode (for terminal use)
+                print("\n=== Clarification Needed ===")
+                for i, question in enumerate(clarifying_questions, 1):
+                    print(f"{i}. {question}")
+                
+                user_clarification = input("\nPlease provide clarifications: ")
+                
+                # Store the clarification
+                self.memory_manager.add_user_message(self.session_id, user_clarification)
+                
+                # Refresh conversation history
+                conversation = self.memory_manager.get_conversation(self.session_id)
+                
+                # Update the plan with clarification
+                plan_data = self.planner.create_plan(conversation)
+                
+                # Check if further clarification is needed (recursive case)
+                if plan_data.get("clarification_needed", False):
+                    # Recursively call run_async with the same interactive_clarification setting
+                    return await self.run_async(user_clarification, interactive_clarification)
+            else:
+                # For web-based flows, return a special response indicating clarification is needed
+                # The frontend will handle displaying the questions and getting user input
+                # The next message from the user will be treated as the clarification
+                return {
+                    "type": "clarification_needed",
+                    "questions": clarifying_questions,
+                    "message": assistant_message
+                }
         
         # Extract the plan steps
         plan = plan_data.get("plan", [])
+
+        print("Plan: ", plan)
         
         if not plan:
-            print(plan_data)
             return "Failed to create a plan. Please try again with a more specific query."
         
-        print("\n=== Plan Created ===")
-        print(json.dumps(plan, indent=2))
-
+        await emit_event_async("plan", {"plan": plan})
+        
         # Store the plan in state
         self.memory_manager.update_state(self.session_id, {"plan": plan})
         
         # Execute the plan
-        return self._execute_plan(plan)
+        return await self._execute_plan_async(plan)
     
     def _execute_plan(self, plan: List[Dict]) -> str:
+        """
+        Synchronous wrapper around _execute_plan_async
+        
+        Args:
+            plan: List of plan steps to execute
+            
+        Returns:
+            Final response text
+        """
+        # Use asyncio.run to run the async method in a sync context
+        return asyncio.run(self._execute_plan_async(plan))
+    
+    async def _execute_plan_async(self, plan: List[Dict]) -> str:
         """
         Execute each step of the plan and generate final response
         
@@ -97,7 +154,7 @@ class AgentLoop:
         Returns:
             Final response text
         """
-        print("\n=== Executing Plan ===")
+        await emit_event_async("executing", {"message": "Executing plan..."})
         
         # Get current state
         state = self.memory_manager.get_state(self.session_id)
@@ -114,7 +171,12 @@ class AgentLoop:
         # Execute each step in sequence
         total_steps = len(plan)
         for i, step in enumerate(plan, 1):
-            print(f"\n--- Step {i}/{total_steps}: {step['description']} ---")
+            step_description = step['description']
+            await emit_event_async("step", {
+                "current": i, 
+                "total": total_steps, 
+                "description": step_description
+            })
             
             # Update context for current step
             context["current_step"] = i
@@ -124,9 +186,18 @@ class AgentLoop:
                 "conversation": self.memory_manager.get_conversation(self.session_id)
             }
             
-            # Execute step with ReAct pattern
+            # Pass the event emitter directly to the executor agent
+            await emit_event_async("executing_step", {"step": i, "description": step_description})
+            
+            # Execute step with executor agent asynchronously
             start_time = time.time()
-            step_result = self.executor.execute_step(step, context, memory)
+            # Pass the emit_event_async method directly to executor
+            step_result = await self.executor.execute_step_async(
+                step, 
+                context, 
+                memory, 
+                emit_event_async
+            )
             execution_time = time.time() - start_time
             
             print(f"Step completed in {execution_time:.2f} seconds")
@@ -141,52 +212,28 @@ class AgentLoop:
             # Update context with completed step results
             context["completed_steps"].append({
                 "step": i,
-                "description": step["description"],
+                "description": step_description,
                 "result": step_result
             })
             context["results"][f"step_{i}"] = step_result
             
-            # Track progress
-            print(f"Progress: {i}/{total_steps} steps completed")
-
             # Update context in state
             self.memory_manager.update_state(self.session_id, {"context": context})
-
-            # Print conversation so far
-            print("\n=== Conversation so far ===")
-            print(json.dumps(self.memory_manager.get_conversation(self.session_id), indent=2))
-
-            # Print context so far
-            print("\n=== Context so far ===")
-            print(json.dumps(context, indent=2))
         
         # Generate final response
-        print("\n=== Generating Final Response ===")
+        print("Generating final response...")
+        await emit_event_async("finalizing", {"message": "Generating final response..."})
+        
         conversation = self.memory_manager.get_conversation(self.session_id)
-        final_response = self.executor.generate_final_response(context, conversation)
+        final_response = await self.executor.generate_final_response_async(context, conversation)
 
+        print("Final response: ", final_response)
+        
+        # Add final response to conversation
+        self.memory_manager.add_assistant_message(self.session_id, final_response)
+        
+        # Emit a completion event to signal the frontend that processing is done
+        await emit_event_async("complete", {"message": final_response})
+
+        print("Final response emitted")
         return final_response
-    
-    def get_session_id(self) -> str:
-        """
-        Get the current session ID.
-        
-        Returns:
-            Session ID string
-        """
-        return self.session_id
-    
-    def load_session(self, session_id: str) -> bool:
-        """
-        Load an existing session.
-        
-        Args:
-            session_id: The session ID to load
-            
-        Returns:
-            Success flag
-        """
-        if self.memory_manager.get_session(session_id):
-            self.session_id = session_id
-            return True
-        return False

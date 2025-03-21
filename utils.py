@@ -10,14 +10,7 @@ from urllib.parse import urlparse
 
 load_dotenv(override=True)
 
-BLOCKED_DOMAINS = [
-    "maliciousbook.com",
-    "evilvideos.com",
-    "darkwebforum.com",
-    "shadytok.com",
-    "suspiciouspins.com",
-    "ilanbigio.com",
-]
+BLOCKED_DOMAINS = []
 
 
 def pp(obj):

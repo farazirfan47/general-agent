@@ -7,6 +7,7 @@ import asyncio
 import uuid
 from app.agents.agent_loop import AgentLoop
 from app.memory.redis_memory import RedisMemory
+from app.events.event_bus import register_websocket_handler, register_event_handler
 
 app = FastAPI()
 
@@ -36,154 +37,6 @@ class ChatResponse(BaseModel):
 # Redis manager for session storage
 memory_manager = RedisMemory()
 
-# Custom AgentLoop class that emits events during processing
-class WebSocketAgentLoop(AgentLoop):
-    def __init__(self, session_id=None, redis_url=None, websocket=None):
-        super().__init__(session_id=session_id, redis_url=redis_url)
-        self.websocket = websocket
-    
-    async def emit_event(self, event_type, data):
-        """Send event updates to the WebSocket client"""
-        if self.websocket:
-            event = {
-                "type": event_type,
-                "data": data
-            }
-            await self.websocket.send_text(json.dumps(event))
-    
-    async def run_async(self, user_query: str) -> str:
-        """Async version of run method with WebSocket events"""
-        print(f"\n=== Starting New Query ===")
-        print(f"User Query: {user_query}")
-        print(f"Session ID: {self.session_id}")
-        
-        # Store the original query in state and add to conversation
-        self.memory_manager.update_state(self.session_id, {"original_query": user_query})
-        self.memory_manager.add_user_message(self.session_id, user_query)
-        
-        await self.emit_event("thinking", {"message": "Processing your request..."})
-        
-        # Get conversation history for context
-        conversation = self.memory_manager.get_conversation(self.session_id)
-        
-        # Get plan from the Planner
-        await self.emit_event("thinking", {"message": "Creating plan..."})
-        plan_data = self.planner.create_plan(conversation)
-        
-        # Check if clarification is needed (simplified for now)
-        if plan_data.get("clarification_needed", False):
-            await self.emit_event("clarification", {"questions": plan_data.get("clarifying_questions", [])})
-            return "Clarification needed"
-        
-        # Extract the plan steps
-        plan = plan_data.get("plan", [])
-        
-        if not plan:
-            return "Failed to create a plan. Please try again with a more specific query."
-        
-        await self.emit_event("plan", {"plan": plan})
-        
-        # Store the plan in state
-        self.memory_manager.update_state(self.session_id, {"plan": plan})
-        
-        # Execute the plan
-        return await self._execute_plan_async(plan)
-    
-    async def _execute_plan_async(self, plan: List[Dict]) -> str:
-        """Async version of _execute_plan with WebSocket events"""
-        await self.emit_event("executing", {"message": "Executing plan..."})
-        
-        # Get current state
-        state = self.memory_manager.get_state(self.session_id)
-        
-        # Initialize execution context
-        context = {
-            "plan": plan,
-            "original_query": state.get("original_query", ""),
-            "completed_steps": [],
-            "current_step": 0,
-            "results": {},
-        }
-        
-        # Execute each step in sequence
-        total_steps = len(plan)
-        for i, step in enumerate(plan, 1):
-            step_description = step['description']
-            await self.emit_event("step", {
-                "current": i, 
-                "total": total_steps, 
-                "description": step_description
-            })
-            
-            # Update context for current step
-            context["current_step"] = i
-            
-            # Create memory object with conversation
-            memory = {
-                "conversation": self.memory_manager.get_conversation(self.session_id)
-            }
-            
-            # Monitor for tool usage
-            def tool_callback(tool_name, args):
-                asyncio.create_task(self.emit_event("tool_usage", {
-                    "tool": tool_name,
-                    "args": args
-                }))
-            
-            # Custom executor logic would go here to track tool usage
-            # For now, we'll just simulate it
-            await self.emit_event("executing_step", {"step": i, "description": step_description})
-            
-            # Check for specific tools in description
-            if "web search" in step_description.lower():
-                await self.emit_event("tool_usage", {"tool": "web_search", "query": state.get("original_query", "")})
-            
-            if "browser" in step_description.lower() or "computer use" in step_description.lower():
-                await self.emit_event("tool_usage", {"tool": "computer_use", "task": step_description})
-            
-            # Simulate CUA agent real-time events if the step involves computer use
-            if "browser" in step_description.lower() or "computer use" in step_description.lower():
-                # Simulate some browser interactions
-                await asyncio.sleep(1)
-                await self.emit_event("cua_event", {"action": "click", "x": 500, "y": 300})
-                await asyncio.sleep(0.5)
-                await self.emit_event("cua_event", {"action": "type", "text": "example search"})
-                await asyncio.sleep(0.5)
-                await self.emit_event("cua_event", {"action": "keypress", "keys": ["Enter"]})
-                await asyncio.sleep(1)
-                await self.emit_event("cua_event", {"action": "scroll", "direction": "down"})
-            
-            # Execute step with executor agent (simplified here)
-            await asyncio.sleep(2)  # Simulate processing time
-            step_result = f"Completed step {i}: {step_description}"
-            
-            # Update context with completed step results
-            context["completed_steps"].append({
-                "step": i,
-                "description": step_description,
-                "result": step_result
-            })
-            context["results"][f"step_{i}"] = step_result
-            
-            # Update context in state
-            self.memory_manager.update_state(self.session_id, {"context": context})
-        
-        # Generate final response
-        await self.emit_event("finalizing", {"message": "Generating final response..."})
-        
-        # Simulate generating final response
-        await asyncio.sleep(1)
-        conversation = self.memory_manager.get_conversation(self.session_id)
-        final_response = f"I've completed your request: {state.get('original_query', '')}"
-        
-        # Add final response to conversation
-        self.memory_manager.add_assistant_message(self.session_id, final_response)
-        
-        await self.emit_event("complete", {"message": final_response})
-        
-        return final_response
-
-
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
     await websocket.accept()
@@ -197,6 +50,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
         active_connections[session_id] = []
     active_connections[session_id].append(websocket)
     
+    # Track connection status
+    connection_active = True
+    
     try:
         # Send initial session information
         await websocket.send_text(json.dumps({
@@ -206,9 +62,79 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
         
         # Create agent loop if not exists
         if session_id not in active_agents:
-            active_agents[session_id] = WebSocketAgentLoop(session_id=session_id, websocket=websocket)
+            agent = AgentLoop(session_id=session_id)
+            active_agents[session_id] = agent
         else:
-            active_agents[session_id].websocket = websocket
+            agent = active_agents[session_id]
+        
+        # Register WebSocket event handler
+        async def websocket_event_handler(event_type, data):
+            # Check if connection is still active before sending
+            nonlocal connection_active
+            if not connection_active:
+                return
+                
+            # Make sure data is serializable
+            try:
+                # Always make a deep copy to avoid modifying the original data
+                import copy
+                websocket_data = copy.deepcopy(data) if data is not None else {}
+                
+                # Ensure we have a dictionary
+                if not isinstance(websocket_data, dict):
+                    if isinstance(websocket_data, str):
+                        # Try to convert string to dict if it looks like JSON
+                        try:
+                            # The json module is already imported at the top level
+                            if websocket_data.strip().startswith('{'):
+                                websocket_data = json.loads(websocket_data)
+                            else:
+                                websocket_data = {"message": websocket_data}
+                        except:
+                            websocket_data = {"message": websocket_data}
+                    else:
+                        # For any other non-dict type, convert to a simple dict with a message
+                        websocket_data = {"message": str(websocket_data)}
+                
+                # Debug logging for stream_url
+                if "stream_url" in websocket_data:
+                    stream_url = websocket_data["stream_url"]
+                    print(f"Found stream_url in {event_type} event: {stream_url[:50]}...")
+                
+                # Handle different event types with appropriate frontend event names
+                websocket_event_type = event_type
+                
+                # Map browser_started events to create the browser iframe immediately
+                if event_type == "browser_started":
+                    # For browser_started events, send a special event to create the browser iframe
+                    websocket_event_type = "cua_event"  # Use the existing frontend event type
+                    # Add some extra context for the frontend
+                    websocket_data["action"] = "browser_started"
+                    websocket_data["description"] = "Browser session initialized"
+                
+                # Convert to JSON and send
+                if connection_active:
+                    await websocket.send_text(json.dumps({
+                        "type": websocket_event_type,
+                        "data": websocket_data
+                    }))
+            except WebSocketDisconnect:
+                # Mark connection as inactive if we get a disconnect exception
+                connection_active = False
+            except Exception as e:
+                print(f"Error sending WebSocket event: {str(e)}")
+                # Try to send a simple error message
+                try:
+                    if connection_active:
+                        await websocket.send_text(json.dumps({
+                            "type": "error", 
+                            "data": {"message": f"Error processing {event_type} event: {str(e)}"}
+                        }))
+                except:
+                    pass
+        
+        # Register the handler with the global event bus for WebSocket events
+        handler_id = register_websocket_handler(websocket_event_handler)
         
         # Handle incoming messages
         while True:
@@ -219,7 +145,21 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
                 user_message = message_data.get("message", "")
                 
                 # Process message with agent
-                response = await active_agents[session_id].run_async(user_message)
+                response = await agent.run_async(user_message, interactive_clarification=False)
+                
+                # Check if response is a clarification request
+                if isinstance(response, dict) and response.get("type") == "clarification_needed":
+                    # Send the clarification request to the client
+                    await websocket.send_text(json.dumps({
+                        "type": "clarification",
+                        "data": {
+                            "questions": response.get("questions", []),
+                            "message": response.get("message", "")
+                        }
+                    }))
+                else:
+                    # Complete event is sent by the event handler for normal responses
+                    pass
             
             elif message_data.get("type") == "ping":
                 await websocket.send_text(json.dumps({
@@ -228,6 +168,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
                 }))
     
     except WebSocketDisconnect:
+        # Mark connection as inactive
+        connection_active = False
         # Remove WebSocket connection
         if session_id in active_connections:
             active_connections[session_id].remove(websocket)
@@ -235,13 +177,30 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
                 del active_connections[session_id]
     
     except Exception as e:
-        await websocket.send_text(json.dumps({
-            "type": "error",
-            "data": {"message": str(e)}
-        }))
+        try:
+            if connection_active:
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "data": {"message": str(e)}
+                }))
+        except:
+            pass
+    
+    finally:
+        # Mark connection as inactive in case we exit the loop for any reason
+        connection_active = False
+        
+        # Clean up event handler registration if needed
+        # Assuming your event bus has a way to unregister handlers
+        try:
+            if 'handler_id' in locals():
+                # If your event_bus has an unregister function, uncomment this
+                # unregister_websocket_handler(handler_id)
+                pass
+        except:
+            pass
 
-
-@app.post("/api/chat", response_model=ChatResponse)
+@app.post("/api/chat", response_model=None)  # Remove response_model for dynamic response
 async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     """
     Process a chat request (non-WebSocket version)
@@ -254,15 +213,25 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     
     # Initialize agent loop if not exists
     if session_id not in active_agents:
-        active_agents[session_id] = WebSocketAgentLoop(session_id=session_id)
+        active_agents[session_id] = AgentLoop(session_id=session_id)
     
-    # Process the message in background
-    result = await active_agents[session_id].run_async(request.message)
+    # Process the message
+    result = await active_agents[session_id].run_async(request.message, interactive_clarification=False)
     
-    return ChatResponse(
-        session_id=session_id,
-        message=result
-    )
+    # Check if result is a clarification request
+    if isinstance(result, dict) and result.get("type") == "clarification_needed":
+        return {
+            "session_id": session_id,
+            "type": "clarification_needed",
+            "questions": result.get("questions", []), 
+            "message": result.get("message", "")
+        }
+    else:
+        # Return normal response
+        return ChatResponse(
+            session_id=session_id,
+            message=result
+        )
 
 @app.get("/api/conversation/{session_id}")
 async def get_conversation(session_id: str):

@@ -13,7 +13,7 @@ interface Message {
 
 interface StatusUpdate {
   id: string;
-  type: 'thinking' | 'web_search' | 'computer_use' | 'cua_event' | 'step' | 'plan';
+  type: 'thinking' | 'web_search' | 'computer_use' | 'cua_event' | 'cua_reasoning' | 'step' | 'plan';
   message: string;
   details?: any;
   timestamp: Date;
@@ -27,6 +27,7 @@ const Chat: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [browserStreamUrl, setBrowserStreamUrl] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   
   // Connect to WebSocket when component mounts
@@ -87,8 +88,10 @@ const Chat: React.FC = () => {
     wsManager.addEventListener(WebSocketEventType.Step, handleStepEvent);
     wsManager.addEventListener(WebSocketEventType.ToolUsage, handleToolUsageEvent);
     wsManager.addEventListener(WebSocketEventType.CuaEvent, handleCuaEvent);
+    wsManager.addEventListener(WebSocketEventType.CuaReasoning, handleCuaReasoningEvent);
     wsManager.addEventListener(WebSocketEventType.Complete, handleCompleteEvent);
     wsManager.addEventListener(WebSocketEventType.Error, handleErrorEvent);
+    wsManager.addEventListener(WebSocketEventType.Clarification, handleClarificationEvent);
   };
   
   // Clean up event listeners
@@ -98,8 +101,10 @@ const Chat: React.FC = () => {
     wsManager.removeEventListener(WebSocketEventType.Step, handleStepEvent);
     wsManager.removeEventListener(WebSocketEventType.ToolUsage, handleToolUsageEvent);
     wsManager.removeEventListener(WebSocketEventType.CuaEvent, handleCuaEvent);
+    wsManager.removeEventListener(WebSocketEventType.CuaReasoning, handleCuaReasoningEvent);
     wsManager.removeEventListener(WebSocketEventType.Complete, handleCompleteEvent);
     wsManager.removeEventListener(WebSocketEventType.Error, handleErrorEvent);
+    wsManager.removeEventListener(WebSocketEventType.Clarification, handleClarificationEvent);
   };
   
   // Fetch conversation history for an existing session
@@ -140,15 +145,29 @@ const Chat: React.FC = () => {
     // Clear status updates for new request
     setStatusUpdates([]);
     
-    // Send to WebSocket
-    wsManager.sendMessage(message);
-    
     // Add initial thinking status
     addStatusUpdate({
       type: 'thinking',
       message: 'Processing your request...',
       details: null
     });
+    
+    // For search-like queries, add some initial steps that mimic the screenshot
+    if (message.toLowerCase().includes('search') || 
+        message.toLowerCase().includes('find') || 
+        message.toLowerCase().includes('list') ||
+        message.toLowerCase().includes('show')) {
+      
+      // Add a searching step
+      addStatusUpdate({
+        type: 'web_search',
+        message: `Searching for ${message.length > 20 ? message.substring(0, 20) + '...' : message}`,
+        details: { query: message }
+      });
+    }
+    
+    // Send to WebSocket
+    wsManager.sendMessage(message);
   };
   
   // Add a new status update
@@ -174,19 +193,55 @@ const Chat: React.FC = () => {
   };
   
   const handlePlanEvent = (data: any) => {
-    addStatusUpdate({
-      type: 'plan',
-      message: 'Created a plan',
-      details: data
-    });
+    // We're not showing the plan anymore, but we'll keep track of it
+    // in case we need it for reference
+    console.log("Plan received but not displayed:", data);
+    
+    // Don't add any status update for plans
+    // Instead, we could add a first step if there are no steps yet
+    if (statusUpdates.filter(update => update.type === 'step').length === 0 && data.steps && data.steps.length > 0) {
+      // Add the first step as "Planning"
+      addStatusUpdate({
+        type: 'step',
+        message: 'Planning the approach',
+        details: {
+          current: 1,
+          total: data.steps.length,
+          completed: false
+        }
+      });
+    }
   };
   
   const handleStepEvent = (data: any) => {
-    addStatusUpdate({
-      type: 'step',
-      message: `Step ${data.current}/${data.total}`,
-      details: data
-    });
+    // Check if this step already exists in our status updates
+    const existingStepIndex = statusUpdates.findIndex(
+      update => update.type === 'step' && update.details?.current === data.current
+    );
+    
+    // If the step already exists, update it with new information
+    if (existingStepIndex !== -1) {
+      const updatedStatusUpdates = [...statusUpdates];
+      updatedStatusUpdates[existingStepIndex] = {
+        ...updatedStatusUpdates[existingStepIndex],
+        message: data.description || `Step ${data.current}/${data.total}: ${data.content || ''}`,
+        details: {
+          ...data,
+          completed: data.completed || false
+        }
+      };
+      setStatusUpdates(updatedStatusUpdates);
+    } else {
+      // Add a new step
+      addStatusUpdate({
+        type: 'step',
+        message: data.description || `Step ${data.current}/${data.total}: ${data.content || ''}`,
+        details: {
+          ...data,
+          completed: data.completed || false
+        }
+      });
+    }
   };
   
   const handleToolUsageEvent = (data: any) => {
@@ -202,6 +257,10 @@ const Chat: React.FC = () => {
       });
     } else if (tool === 'computer_use') {
       message = 'Using computer browser';
+      // Check if the browser stream URL is available in the data
+      if (data.stream_url) {
+        setBrowserStreamUrl(data.stream_url);
+      }
       addStatusUpdate({
         type: 'computer_use',
         message,
@@ -211,14 +270,118 @@ const Chat: React.FC = () => {
   };
   
   const handleCuaEvent = (data: any) => {
+    // Check if there's a stream URL in the data (should be at the top level)
+    if (data.stream_url && !browserStreamUrl) {
+      console.log("Setting browser stream URL:", data.stream_url);
+      setBrowserStreamUrl(data.stream_url);
+    }
+    
+    // Handle browser_started events immediately to show the iframe
+    if (data.action === "browser_started") {
+      console.log("Browser started event received with stream URL:", data.stream_url);
+      setBrowserStreamUrl(data.stream_url);
+      // Add a status update for browser initialization
+      addStatusUpdate({
+        type: 'cua_event',
+        message: "Browser session initialized",
+        details: data
+      });
+      return;
+    }
+    
+    // Format the message based on the action type
+    let message = 'Browser action';
+    let details = data;
+    
+    // Format the message based on the action type
+    if (data.action) {
+      switch (data.action.toLowerCase()) {
+        case 'searching':
+          message = `Searching for "${data.query || 'information'}"`;
+          break;
+        case 'selecting':
+          message = `Selecting ${data.element || 'an item'}`;
+          break;
+        case 'scrolling':
+          message = `Scrolling ${data.direction || 'page'}`;
+          break;
+        case 'capturing':
+          message = `Capturing ${data.element || 'information'}`;
+          break;
+        case 'completed':
+          message = `Completed list of ${data.task || 'items'}`;
+          break;
+        case 'clicking':
+          message = `Clicking on ${data.element || 'element'}`;
+          break;
+        case 'typing':
+          message = `Typing ${data.text ? '"' + data.text + '"' : 'text'}`;
+          break;
+        case 'navigating':
+          message = `Navigating to ${data.url || 'page'}`;
+          break;
+        default:
+          // Clean and capitalize the action for display
+          const actionText = data.action.toLowerCase()
+            .replace(/_/g, ' ')
+            .replace(/\b\w/g, (c: string) => c.toUpperCase());
+          
+          message = actionText;
+      }
+    }
+    
+    // Add description if available
+    if (data.description) {
+      details = {
+        ...data,
+        description: data.description
+      };
+    }
+    
     addStatusUpdate({
       type: 'cua_event',
-      message: 'Browser action',
+      message,
+      details
+    });
+  };
+  
+  const handleCuaReasoningEvent = (data: any) => {
+    // Create a readable message based on reasoning text
+    let message = 'Reasoning';
+    
+    if (data.text) {
+      // Extract the first sentence or up to 60 chars for the main message
+      const firstSentence = data.text.split('.')[0];
+      message = firstSentence.length > 60 
+        ? firstSentence.substring(0, 60) + '...' 
+        : firstSentence;
+    }
+    
+    // Add reasoning status update
+    addStatusUpdate({
+      type: 'cua_reasoning',
+      message,
       details: data
     });
   };
   
   const handleCompleteEvent = (data: any) => {
+    // Mark all steps as completed
+    const updatedStatusUpdates = statusUpdates.map(update => {
+      if (update.type === 'step') {
+        return {
+          ...update,
+          details: {
+            ...update.details,
+            completed: true
+          }
+        };
+      }
+      return update;
+    });
+    
+    setStatusUpdates(updatedStatusUpdates);
+    
     // Add assistant message with the final response
     const assistantMessage: Message = {
       role: 'assistant',
@@ -228,6 +391,23 @@ const Chat: React.FC = () => {
     
     setMessages(prev => [...prev, assistantMessage]);
     setIsProcessing(false);
+    
+    // Check if we should keep the browser view open
+    const shouldKeepBrowserOpen = data.keep_browser_open === true || 
+                                 (data.message && data.message.includes("I'll keep the browser open"));
+    
+    // Only reset the browserStreamUrl if we don't need to keep it open
+    if (!shouldKeepBrowserOpen) {
+      console.log("Closing browser view after completion");
+      setBrowserStreamUrl(null);
+    } else {
+      console.log("Keeping browser view open after completion");
+    }
+    
+    // Clear status updates after a short delay to show completion
+    setTimeout(() => {
+      setStatusUpdates([]);
+    }, 2000);
   };
   
   const handleErrorEvent = (data: any) => {
@@ -241,114 +421,126 @@ const Chat: React.FC = () => {
     setIsProcessing(false);
   };
   
-  // Generate shareable link
+  // Handle clarification event
+  const handleClarificationEvent = (data: any) => {
+    // Add assistant message asking for clarification
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: data.message,
+      timestamp: new Date()
+    };
+    
+    setMessages(prev => [...prev, assistantMessage]);
+    setIsProcessing(false);
+  };
+  
+  // Get shareable link for this conversation
   const getShareableLink = () => {
-    if (!sessionId) return '';
-    const baseUrl = window.location.origin;
-    return `${baseUrl}/?session=${sessionId}`;
+    const url = new URL(window.location.href);
+    return url.toString();
   };
   
   // Copy shareable link to clipboard
   const copyShareableLink = () => {
-    const link = getShareableLink();
-    navigator.clipboard.writeText(link);
-    alert('Link copied to clipboard!');
+    navigator.clipboard.writeText(getShareableLink());
   };
   
-  // Handle creating a new chat
+  // Start a new chat
   const handleNewChat = () => {
-    if (typeof window !== 'undefined') {
-      window.location.href = '/?session=new';
-    }
+    // Redirect to new session
+    router.push('/?session=new');
   };
   
   return (
-    <div className="flex flex-col h-full max-h-screen">
-      {/* Header */}
-      <header className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-800">
-        <h1 className="text-xl font-bold">AI Assistant</h1>
-        
-        <div className="flex items-center space-x-4">
-          {sessionId && (
-            <div className="flex items-center text-sm">
-              <span className="mr-2">Session ID: {sessionId}</span>
-              <button 
-                className="text-primary-600 hover:text-primary-700"
-                onClick={copyShareableLink}
-              >
-                📋 Copy Link
-              </button>
-            </div>
-          )}
-          
+    <div className="flex flex-col w-full h-full">
+      {/* New Header Component */}
+      <header className="bg-zinc-900 text-white p-4 flex justify-between items-center border-b border-zinc-800">
+        <div className="flex items-center gap-2">
+          <h1 className="text-xl font-semibold">AI Assistant</h1>
+          {sessionId && <span className="text-xs text-zinc-400">Session: {sessionId}</span>}
+        </div>
+        <div className="flex gap-2">
           <button 
-            className="px-3 py-1 text-sm bg-primary-600 hover:bg-primary-700 text-white rounded-md"
             onClick={handleNewChat}
+            className="px-3 py-1 text-sm bg-zinc-800 hover:bg-zinc-700 rounded-md transition-colors"
           >
             New Chat
           </button>
+          <button 
+            onClick={copyShareableLink}
+            className="px-3 py-1 text-sm bg-zinc-800 hover:bg-zinc-700 rounded-md transition-colors flex items-center gap-1"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+            </svg>
+            Share
+          </button>
         </div>
       </header>
-      
-      {/* Messages Container */}
-      <div className="flex-1 overflow-y-auto p-4">
-        {messages.length === 0 ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="text-center p-6 max-w-md">
-              <h2 className="text-2xl font-bold mb-2">Welcome to AI Assistant</h2>
-              <p className="text-gray-600 dark:text-gray-400 mb-4">
-                Start a conversation with the AI assistant to get help with various tasks.
-              </p>
+
+      {/* Updated main content area - now full width */}
+      <div className="flex-1 overflow-hidden flex justify-center">
+        <div className="flex grow flex-col h-full w-full max-w-[1000px] gap-2">
+          <div className="h-[calc(100vh-140px)] overflow-y-auto px-4 md:px-10 flex flex-col">
+            <div className="mt-auto space-y-5 pt-4">
+              {messages.map((msg, index) => (
+                <ChatMessage
+                  key={`${msg.role}-${index}`}
+                  role={msg.role}
+                  content={msg.content}
+                  timestamp={msg.timestamp}
+                  isLoading={index === messages.length - 1 && msg.role === 'assistant' && isProcessing}
+                />
+              ))}
+              
+              {/* Status updates and activity timeline */}
+              {isProcessing && statusUpdates.length > 0 && (
+                <div className="flex justify-start w-full">
+                  <StatusIndicator updates={statusUpdates} />
+                </div>
+              )}
+              
+              {/* Browser view - shows after some status updates have accumulated */}
+              {browserStreamUrl && statusUpdates.filter(u => u.type !== 'thinking').length > 0 && (
+                <div className="w-full mb-6 mt-2">
+                  <div className="bg-zinc-900 text-white rounded-t-lg p-2 flex items-center justify-between text-sm">
+                    <div className="flex items-center gap-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                        <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                        <polyline points="21 15 16 10 5 21"></polyline>
+                      </svg>
+                      <span className="text-zinc-400">Operator Browser</span>
+                    </div>
+                    <div className="h-5 w-5 flex items-center justify-center">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+                        <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+                      </svg>
+                    </div>
+                  </div>
+                  <div className="browser-view">
+                    <iframe 
+                      src={browserStreamUrl}
+                      className="w-full h-[400px]"
+                      frameBorder="0"
+                      title="Browser View"
+                    ></iframe>
+                  </div>
+                </div>
+              )}
+              
+              <div ref={messagesEndRef} />
             </div>
           </div>
-        ) : (
-          <>
-            {/* Render chat messages */}
-            {messages.map((message, index) => (
-              <ChatMessage 
-                key={`msg-${index}`}
-                role={message.role}
-                content={message.content}
-                timestamp={message.timestamp}
-              />
-            ))}
-            
-            {/* Status updates */}
-            {isProcessing && (
-              <div className="my-4 border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 rounded-lg p-3">
-                <h3 className="font-medium mb-2">Status Updates</h3>
-                <div className="space-y-1 max-h-48 overflow-y-auto">
-                  {statusUpdates.map((update) => (
-                    <StatusIndicator
-                      key={update.id}
-                      type={update.type}
-                      message={update.message}
-                      details={update.details}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-            
-            {/* Thinking indicator if processing */}
-            {isProcessing && (
-              <ChatMessage 
-                role="assistant"
-                content=""
-                isLoading={true}
-              />
-            )}
-          </>
-        )}
-        <div ref={messagesEndRef} />
+          
+          <ChatInput
+            onSendMessage={handleSendMessage}
+            isDisabled={!isConnected || isProcessing}
+            placeholder="Message..."
+          />
+        </div>
       </div>
-      
-      {/* Input Area */}
-      <ChatInput 
-        onSendMessage={handleSendMessage}
-        isDisabled={!isConnected || isProcessing}
-        placeholder={isConnected ? "Type your message..." : "Connecting..."}
-      />
     </div>
   );
 };

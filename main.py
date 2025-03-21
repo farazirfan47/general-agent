@@ -35,7 +35,7 @@ def main():
                 print(f"Started new session: {current_session_id}")
                 continue
             
-            # Run the agent
+            # Run the agent (the run method internally uses asyncio.run)
             result = agent.run(user_query)
             
             # Print the final result

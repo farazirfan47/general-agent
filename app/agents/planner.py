@@ -11,7 +11,7 @@ class PlannerAgent:
     Responsible for analyzing user queries and creating actionable plans.
     """
     def __init__(self):
-        self.model = "gpt-4o"
+        self.model = "o1"
     
     def create_plan(self, conversation) -> Dict:
         """
@@ -24,54 +24,32 @@ class PlannerAgent:
         Returns:
             Dict containing the plan or clarifying questions
         """
-        # Define planner instructions
         planner_instructions = f"""
-        You are a strategic planner for an agent system with web search and browser interaction capabilities. Your task is to create efficient execution plans for user requests.
+
+        You are an expert Planning Agent that breaks down problems into clear, sequential steps, considering that each step runs in a new browser instance.
 
         # AVAILABLE TOOLS
-        1. Web Search Tool - Use for: Finding current information, researching topics, locating resources
-        2. Browser Tool (computer_use) - Use for: Performing tasks in a browser environment, interacting with websites
+        1. Web Search Tool - For finding current information, researching topics, locating resources
+        2. Browser Tool - For performing tasks in a browser environment, interacting with websites
 
         # PLANNING GUIDELINES
-        1. Analyze user queries to determine the most efficient approach.
-        2. For simple factual queries, prefer direct single-step plans using web search.
-        3. Only create multi-step plans when the task genuinely requires sequential actions.
-        4. Only ask clarifying questions for critical information that cannot be inferred or searched.
+        1. Break tasks into appropriate steps based on complexity - more for complex tasks, fewer for simple ones.
+        2. Each step should accomplish ONE specific objective with clear outputs.
+        3. IMPORTANT: Each step runs in a NEW browser instance with NO access to previous browser state.
+        4. Each step must be completely self-contained with all necessary information.
+        5. In step descriptions, include ALL information needed to execute that step independently.
+        6. Explicitly state what information should be collected and passed to subsequent steps.
+        7. For simple factual queries, use a single-step plan with web search.
+        8. Ensure steps follow a logical progression where later steps incorporate outputs from earlier steps.
 
-        # TOOL-SPECIFIC PLANNING RULES
-        ## For Web Search Tool:
-        - Use for information gathering steps
-        - Can be used as standalone steps
-
-        ## For computer_use Tool:
-        - IMPORTANT: Always define COMPLETE TASKS in a SINGLE STEP
-        - BAD EXAMPLE: Step 1: "Visit Google", Step 2: "Search for information" 
-        - GOOD EXAMPLE: Step 1: "Use browser to navigate to Google and search for XYZ information"
-        - Include all necessary context and sub-actions within one comprehensive step
-        - Specify the full sequence of actions needed to achieve a coherent goal in one step
-
-        # PLAN EFFICIENCY GUIDELINES
-        - For simple information queries (e.g., "What is the weather in Boston?"), use a single search step.
-        - For tasks requiring website interaction, create minimal necessary steps with comprehensive descriptions.
-        - Combine logical sequences of actions within the same tool into a single step.
-        - Each step should represent a distinct phase of the task that produces a meaningful outcome.
-
-        Return your analysis in the following JSON format:
-        {{
-            "clarification_needed": true/false, 
-            "clarifying_questions": ["question1", "question2"],  // only if clarification_needed is true
-            "plan": [
-                {{
-                    "step": 1, 
-                    "tool": "web_search or computer_use",
-                    "description": "Complete description of the step..."
-                }}
-                // Add more steps only if genuinely different actions are required
-            ]
-        }}
+        # BROWSER CONTEXT HANDLING
+        1. Always include relevant URLs, search terms, and navigation paths in each step description.
+        2. Specify exactly what information to extract and how it should be formatted for the next step.
+        3. When a step depends on previous results, clearly state what those dependencies are.
+        4. Never assume information from a previous browser session will be available.
 
         Today is {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-        """     
+"""
         # Log the planning attempt
         # print(f"Creating plan for query: {user_query}")
         
@@ -106,8 +84,10 @@ class PlannerAgent:
                 }}
             )
 
+            print("Planner response: ", response.output_text)
+
             # Extract just the plan data
-            plan_data = json.loads(response.output[0].content[0].text)
+            plan_data = json.loads(response.output_text)
             return plan_data
             
         except Exception as e:

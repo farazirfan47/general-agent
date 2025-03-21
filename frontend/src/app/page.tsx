@@ -9,7 +9,7 @@ const Chat = dynamic(() => import('@/components/Chat'), {
 
 export default function Home() {
   return (
-    <main className="h-screen overflow-hidden">
+    <main className="h-screen overflow-hidden bg-gray-200">
       <Chat />
     </main>
   );
