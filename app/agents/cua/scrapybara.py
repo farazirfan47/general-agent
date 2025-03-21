@@ -53,7 +53,8 @@ class ScrapybaraBrowser:
         self.instance = self.client.start_browser(blocked_domains=[
             domain.replace("https://", "").replace("www.", "")
             for domain in BLOCKED_DOMAINS
-        ])
+        ]
+        )
         print("Scrapybara browser started ₍ᐢ•(ܫ)•ᐢ₎")
         self.stream_url = self.instance.get_stream_url().stream_url
         print(
@@ -136,8 +137,8 @@ class ScrapybaraBrowser:
         self.instance.computer(
             action="scroll",
             coordinates=[x, y],
-            delta_x=scroll_x // 20,
-            delta_y=scroll_y // 20,
+            delta_x=scroll_x // 100,
+            delta_y=scroll_y // 100,
         )
 
     def type(self, text: str) -> None:
@@ -225,8 +226,8 @@ class ScrapybaraUbuntu:
         self.instance.computer(
             action="scroll",
             coordinates=[x, y],
-            delta_x=scroll_x // 20,
-            delta_y=scroll_y // 20,
+            delta_x=scroll_x // 100,
+            delta_y=scroll_y // 100,
         )
 
     def type(self, text: str) -> None:

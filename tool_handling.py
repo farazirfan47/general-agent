@@ -6,6 +6,27 @@ from app.agents.cua.local_playwright import LocalPlaywrightComputer
 from app.agents.cua.scrapybara import ScrapybaraBrowser
 from utils import create_response
 
+# Base instructions that the LLM should incorporate and expand upon
+base_instructions = """
+You are a web browsing agent that completes tasks autonomously.
+
+CRITICAL SCROLLING RULES:
+1. NEVER scroll to the absolute top or bottom of any page - this causes you to miss content.
+2. Use INCREMENTAL scrolling - move approximately 20-30% of the viewport at a time.
+3. After each incremental scroll, IMMEDIATELY document any visible content relevant to your task.
+4. Count your scrolls explicitly: "Scroll #1", "Scroll #2", etc. to maintain awareness of position.
+5. Limit consecutive scrolls in the same direction to a maximum of 5 before processing content.
+6. If you notice you've reached a footer or header area, STOP scrolling in that direction.
+7. When changing scroll direction, move in small increments (10-15% of viewport).
+8. NEVER perform rapid consecutive scrolls - pause between each scroll action.
+
+PREVENT SCROLLING ERRORS:
+1. After any scroll action, verify you can see new content by mentioning specific elements now visible.
+2. If you detect only navigation elements, headers, or footers after scrolling, immediately adjust your position.
+3. Use specific CSS selectors or element descriptions when documenting to prove content visibility.
+4. When content appears to repeat or you see only navigation elements, use "page up" or "page down" instead of continuous scrolling.
+"""
+
 async def enrich_task_with_llm(task):
     """
     Enriches a user task with additional context and detailed instructions using an LLM.
@@ -18,52 +39,11 @@ async def enrich_task_with_llm(task):
         Comprehensive instructions for the browser agent
     """
     
-    # Base instructions that the LLM should incorporate and expand upon
-    base_instructions = """
-    You are a web browsing agent that autonomously interacts with websites to complete tasks.
-    
-    OPERATION GUIDELINES:
-    1. Complete tasks without asking for confirmation on routine actions.
-    2. Make decisive choices and stick with them - avoid website hopping.
-    3. For listing or ranking tasks, choose ONE authoritative source and stay there.
-    4. Explicitly extract and document specific information from pages.
-    5. Track your progress with numbered steps to maintain focus.
-    
-    STRUCTURED TASK APPROACH:
-    1. Begin by clearly defining what constitutes task completion.
-    2. Choose ONE definitive source for information and commit to it.
-    3. After selecting a source, spend no more than 2 minutes exploring before extracting information.
-    4. Document findings in a structured format as you discover them.
-    5. Conclude with a formal summary of findings, even if incomplete.
-    
-    PREVENT ERRATIC NAVIGATION:
-    1. No back-and-forth scrolling - scroll methodically in ONE direction only.
-    2. Avoid switching between multiple websites/tabs for the same information.
-    3. After clicking any link, spend at least 30 seconds exploring that page before navigating away.
-    4. Limit to maximum 3 different websites for any single task.
-    5. If a website has the information you need, do not leave it to search elsewhere.
-    
-    CONTROLLED SCROLLING TECHNIQUE:
-    1. Scroll in small, incremental steps (~25% of viewport).
-    2. Scroll in ONE direction only, recording information as you go.
-    3. If you need to "scroll back," take a screenshot first, then navigate to a specific section.
-    4. For any page, perform a maximum of 5 scroll operations total.
-    5. After each scroll, document ANY relevant information immediately.
-    
-    EXPLICIT INFORMATION EXTRACTION:
-    1. For listing tasks, create a numbered list of items as you discover them.
-    2. After finding 5-10 items, stop gathering and present results.
-    3. For each item discovered, immediately document key attributes.
-    4. If an authoritative list is found, trust it without verification.
-    """
-    
     prompt = f"""
     You are an expert at creating detailed instructions for an autonomous web browsing agent.
     
     ORIGINAL TASK: {task}
-    
-    BASE INSTRUCTIONS: {base_instructions}
-    
+        
     DATE CONTEXT: Today is {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     
     Please create a comprehensive set of instructions for the browser agent that:
@@ -127,10 +107,10 @@ async def handle_cua_request(task, emit_event_async=None):
         # Format the task with the comprehensive instructions
         formatted_task = f"""
         <instructions>
-        {comprehensive_instructions}
+        {base_instructions}
         </instructions>
         <task>
-        {task}
+        {comprehensive_instructions}
         </task>
 
         IMPORTANT: When you are done with the task, summarize your findings in a structured format.
