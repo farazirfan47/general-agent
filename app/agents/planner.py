@@ -11,7 +11,7 @@ class PlannerAgent:
     Responsible for analyzing user queries and creating actionable plans.
     """
     def __init__(self):
-        self.model = "o1"
+        self.model = "o3-mini"
     
     def create_plan(self, conversation) -> Dict:
         """

@@ -7,7 +7,7 @@ import asyncio
 import uuid
 from app.agents.agent_loop import AgentLoop
 from app.memory.redis_memory import RedisMemory
-from app.events.event_bus import register_websocket_handler, register_event_handler, unregister_websocket_handler, list_websocket_handlers, clear_all_websocket_handlers
+from app.events.event_bus import register_websocket_handler, register_event_handler, unregister_websocket_handler, list_websocket_handlers, clear_all_websocket_handlers, send_message
 import os
 from redis import Redis
 
@@ -37,6 +37,9 @@ clear_all_websocket_handlers()  # Clear any handlers from previous runs
 
 # At the top of your file, add a counter for debugging
 _websocket_connection_counter = 0
+
+# At the top of the file, add a global variable to track active sessions
+active_sessions = {}
 
 class ChatRequest(BaseModel):
     message: str
@@ -73,6 +76,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
     if session_id not in active_connections:
         active_connections[session_id] = []
     active_connections[session_id].append(websocket)
+    
+    # Store the session in the global registry
+    active_sessions[session_id] = websocket
     
     # Track connection status
     connection_active = True
@@ -173,7 +179,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
         # Handle incoming messages
         while True:
             data = await websocket.receive_text()
-            message_data = json.loads(data)
+            print(f"[WEBSOCKET] Raw data received: {data}")
+            try:
+                message_data = json.loads(data)
+                print(f"[WEBSOCKET] Parsed message: {message_data}")
+            except Exception as e:
+                print(f"[WEBSOCKET] Error parsing message: {e}")
             
             if message_data.get("type") == "message":
                 user_message = message_data.get("message", "")
@@ -237,6 +248,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
         except:
             pass
 
+    # Start a background task to check connection status
+    async def check_connection():
+        while connection_active:
+            print(f"[WEBSOCKET] Connection status for session {session_id}: Active")
+            await asyncio.sleep(30)  # Check every 30 seconds
+
+    asyncio.create_task(check_connection())
+
 @app.post("/api/chat", response_model=None)  # Remove response_model for dynamic response
 async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     """
@@ -290,4 +309,37 @@ async def get_conversation(session_id: str):
             "state": state
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/debug/send_clarification/{clarification_id}/{response}")
+async def debug_send_clarification(clarification_id: str, response: str):
+    """Debug endpoint to manually send a clarification response"""
+    from app.events.event_bus import _message_queues
+    
+    print(f"[DEBUG] Manually sending clarification response: {response} to ID: {clarification_id}")
+    print(f"[DEBUG] Available queues: {list(_message_queues.keys())}")
+    
+    if clarification_id in _message_queues:
+        await _message_queues[clarification_id].put(response)
+        print(f"[DEBUG] Message directly put in queue {clarification_id}")
+        return {"status": "success", "message": f"Response sent to queue {clarification_id}"}
+    else:
+        # Create the queue and put the message
+        from app.events.event_bus import get_message_queue
+        queue = get_message_queue(clarification_id)
+        await queue.put(response)
+        print(f"[DEBUG] Created queue and put message in {clarification_id}")
+        return {"status": "success", "message": f"Queue created and response sent to {clarification_id}"}
+
+@app.post("/api/send_clarification/{clarification_id}/{response}")
+async def send_clarification(clarification_id: str, response: str):
+    """API endpoint to send a clarification response"""
+    from app.events.event_bus import _message_queues, get_message_queue
+    
+    if clarification_id in _message_queues:
+        await _message_queues[clarification_id].put(response)
+        return {"status": "success", "message": f"Response sent to queue {clarification_id}"}
+    else:
+        queue = get_message_queue(clarification_id)
+        await queue.put(response)
+        return {"status": "success", "message": f"Queue created and response sent to {clarification_id}"} 

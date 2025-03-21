@@ -16,6 +16,8 @@ class ExecutorAgent:
         self.model = "gpt-4o"
         self.client = OpenAI()
         self.async_client = AsyncOpenAI()
+        # Track active CUA agents
+        self.active_cua_agents = []
         
     def execute_step(self, step: Dict, context: Dict, memory: Dict, emit_event_async: Optional[Callable] = None) -> Dict:
         """
@@ -118,7 +120,7 @@ class ExecutorAgent:
                             await emit_event_async("cua_event", cua_event_data)
                         
                         # Handle CUA request by passing the event emitter directly to handle_cua_request
-                        # This eliminates the need for intermediate callbacks
+                        # Also pass self to register the CUA agent
                         tool_response = await handle_cua_request(args["task"], emit_event_async)
 
                         print("Successfully executed CUA request, Outside the function")

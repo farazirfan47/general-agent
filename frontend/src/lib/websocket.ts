@@ -6,11 +6,13 @@ interface WebSocketManager {
   socket: WebSocket | null;
   sessionId: string | null;
   eventListeners: Map<string, WebSocketCallback[]>;
+  messageQueue: any[];
   connect: (sessionId?: string) => Promise<string>;
   disconnect: () => void;
   sendMessage: (message: string) => void;
   addEventListener: (event: string, callback: WebSocketCallback) => void;
   removeEventListener: (event: string, callback: WebSocketCallback) => void;
+  sendEvent: (eventType: string, data: any) => void;
 }
 
 // Create WebSocket manager singleton
@@ -18,6 +20,7 @@ export const wsManager: WebSocketManager = {
   socket: null,
   sessionId: null,
   eventListeners: new Map(),
+  messageQueue: [],
 
   // Connect to WebSocket server
   connect: async (sessionId?: string): Promise<string> => {
@@ -156,6 +159,30 @@ export const wsManager: WebSocketManager = {
         listeners.filter(cb => cb !== callback)
       );
     }
+  },
+
+  // Send custom event
+  sendEvent: (eventType: string, data: any) => {
+    if (!wsManager.socket || wsManager.socket.readyState !== WebSocket.OPEN) {
+      console.log("WebSocket not open, attempting to reconnect...");
+      // Attempt to reconnect
+      wsManager.connect(wsManager.sessionId || undefined)
+        .then(() => {
+          console.log("Reconnected, now sending event");
+          // Now send the event
+          const message = { type: eventType, data: data };
+          wsManager.socket?.send(JSON.stringify(message));
+        })
+        .catch(err => console.error("Failed to reconnect:", err));
+      return;
+    }
+
+    const message = {
+      type: eventType,
+      data: data
+    };
+    console.log(`Sending WebSocket event: ${JSON.stringify(message)}`);
+    wsManager.socket.send(JSON.stringify(message));
   }
 };
 
@@ -172,5 +199,6 @@ export enum WebSocketEventType {
   Complete = 'complete',
   Error = 'error',
   Clarification = 'clarification',
+  CuaClarification = 'cua_clarification',
   All = 'all'
 } 

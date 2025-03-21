@@ -10,6 +10,9 @@ interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: Date;
+  requiresResponse?: boolean;
+  clarificationId?: string;
+  isClarification?: boolean;
 }
 
 interface StatusUpdate {
@@ -29,6 +32,7 @@ const Chat: React.FC = () => {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [browserStreamUrl, setBrowserStreamUrl] = useState<string | null>(null);
+  const [clarificationMode, setClarificationMode] = useState<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   
   // Connect to WebSocket when component mounts
@@ -59,6 +63,7 @@ const Chat: React.FC = () => {
         if (sessionIdParam !== 'new') {
           fetchConversationHistory(sessionIdParam);
         }
+
       } catch (error) {
         console.error('Failed to connect to WebSocket:', error);
       }
@@ -79,6 +84,7 @@ const Chat: React.FC = () => {
   // Scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    
   }, [messages, statusUpdates]);
   
   // Setup WebSocket event listeners
@@ -93,6 +99,7 @@ const Chat: React.FC = () => {
     wsManager.addEventListener(WebSocketEventType.Complete, handleCompleteEvent);
     wsManager.addEventListener(WebSocketEventType.Error, handleErrorEvent);
     wsManager.addEventListener(WebSocketEventType.Clarification, handleClarificationEvent);
+    wsManager.addEventListener(WebSocketEventType.CuaClarification, handleCuaClarificationEvent);
   };
   
   // Clean up event listeners
@@ -106,6 +113,7 @@ const Chat: React.FC = () => {
     wsManager.removeEventListener(WebSocketEventType.Complete, handleCompleteEvent);
     wsManager.removeEventListener(WebSocketEventType.Error, handleErrorEvent);
     wsManager.removeEventListener(WebSocketEventType.Clarification, handleClarificationEvent);
+    wsManager.removeEventListener(WebSocketEventType.CuaClarification, handleCuaClarificationEvent);
   };
   
   // Fetch conversation history for an existing session
@@ -133,6 +141,57 @@ const Chat: React.FC = () => {
   
   // Handle sending a new message
   const handleSendMessage = (message: string) => {
+    // Check if we're in clarification mode
+    if (clarificationMode) {
+      // Find the last message that requires a response
+      const lastClarificationMessage = [...messages].reverse()
+        .find(msg => msg.role === 'assistant' && msg.requiresResponse);
+      
+      if (lastClarificationMessage && lastClarificationMessage.clarificationId) {
+        // Add user message to the list
+        const userMessage: Message = {
+          role: 'user',
+          content: message,
+          timestamp: new Date(),
+          isClarification: true
+        };
+        
+        setMessages(prev => [...prev, userMessage]);
+        setIsProcessing(true);
+        setClarificationMode(false);
+
+        console.log("Sending clarification response:", {
+          type: 'clarification_response',
+          data: {
+            response: message,
+            id: lastClarificationMessage.clarificationId
+          }
+        });
+        
+        // Before sending the clarification response
+        console.log("WebSocket readyState:", wsManager.socket?.readyState);
+        // 0 = CONNECTING, 1 = OPEN, 2 = CLOSING, 3 = CLOSED
+        
+        // Use a fetch call to the debug endpoint
+        fetch(`/api/send_clarification/${lastClarificationMessage.clarificationId}/${encodeURIComponent(message)}`, {
+          method: 'POST',
+        })
+        .then(response => response.json())
+        .then(data => console.log('Clarification sent successfully:', data))
+        .catch(error => console.error('Error sending clarification:', error));
+        
+        // Add a thinking status
+        addStatusUpdate({
+          type: 'thinking',
+          message: 'Processing your clarification...',
+          details: null
+        });
+        
+        return;
+      }
+    }
+    
+    // Regular message handling (your existing code)
     // Add user message to the list
     const userMessage: Message = {
       role: 'user',
@@ -476,6 +535,49 @@ const Chat: React.FC = () => {
     setStatusUpdates([]);
   };
   
+  // Handle CUA clarification event
+  const handleCuaClarificationEvent = (data: any) => {
+    // Skip if data is empty or has no question
+    if (!data || !data.question) {
+      console.log("Skipping empty CUA clarification event");
+      return;
+    }
+    
+    console.log("Received CUA clarification request:", data);
+    console.log("Setting clarification mode to true");
+    console.log("Storing clarification ID:", data.id);
+    
+    // Extract the question and ID
+    const question = data.question;
+    const clarificationId = data.id;
+    
+    // Add assistant message asking the clarification question
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: question,
+      timestamp: new Date(),
+      requiresResponse: true,  // Flag to indicate this needs a direct response
+      clarificationId: clarificationId  // Store the ID for the response
+    };
+    
+    setMessages(prev => [...prev, assistantMessage]);
+    
+    // Set a special processing state that indicates we're waiting for user clarification
+    setIsProcessing(false);
+    setClarificationMode(true);
+    
+    // IMPORTANT: Don't clear status updates during clarification
+    // This was causing the browser iframe to disappear
+    // setStatusUpdates([]);
+    
+    // Instead, add a clarification status update while keeping existing ones
+    addStatusUpdate({
+      type: 'thinking',
+      message: 'Waiting for your clarification...',
+      details: null
+    });
+  };
+  
   // Get shareable link for this conversation
   const getShareableLink = () => {
     const url = new URL(window.location.href);
@@ -491,19 +593,6 @@ const Chat: React.FC = () => {
   const handleNewChat = () => {
     // Redirect to new session
     router.push('/?session=new');
-  };
-  
-  // Update the WebSocket connection to use the environment variable
-  const connectWebSocket = (sessionId: string) => {
-    // Use the environment-specific WebSocket URL
-    const wsUrl = sessionId === 'new' 
-      ? `${WS_URL}/ws/new` 
-      : `${WS_URL}/ws/${sessionId}`;
-      
-    console.log(`Connecting to WebSocket at ${wsUrl}`);
-    const ws = new WebSocket(wsUrl);
-    
-    // ... rest of your WebSocket setup code
   };
   
   return (

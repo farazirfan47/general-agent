@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 
 from app.agents.cua.computer import Computer
 from utils import (
@@ -9,6 +10,7 @@ from utils import (
 import json
 from typing import Callable, Dict, List, Any, Optional
 import datetime
+from app.events.event_bus import get_message_queue, send_message, receive_message
 
 class CuaAgent:
     """
@@ -54,9 +56,45 @@ class CuaAgent:
             if self.print_steps:
                 # check if item["content"][0]["text"] is a question
                 if item["content"][0]["text"].endswith("?"):
-                    # user_clarification = input("\nQuestion: " + item["content"][0]["text"] + "\n")
-                    # return [{"role": "user", "content": user_clarification}]
-                    print(f"Question: {item['content'][0]['text']}")
+                    question = item["content"][0]["text"]
+                    
+                    # Generate a unique ID for this clarification request
+                    clarification_id = str(uuid.uuid4())
+                    
+                    # Create an event to notify the frontend about the clarification needed
+                    if self.emit_event_async:
+                        try:
+                            # Emit the clarification request with the ID
+                            clarification_data = {
+                                "question": question,
+                                "type": "cua_clarification",
+                                "id": clarification_id
+                            }
+
+                            print(f"Emitting clarification: {clarification_data}")
+                            
+                            if asyncio.iscoroutinefunction(self.emit_event_async):
+                                await self.emit_event_async("cua_clarification", clarification_data)
+                            else:
+                                self.emit_event_async("cua_clarification", clarification_data)
+                            
+                            # Create the queue before waiting for a response - don't await this
+                            get_message_queue(clarification_id)
+                            print(f"Waiting for clarification response for {clarification_id}")
+                            user_clarification = await receive_message(clarification_id, timeout=120)
+                            print(f"Received clarification response: {user_clarification}")
+                            
+                            if user_clarification:
+                                return [{"role": "user", "content": user_clarification}]
+                            else:
+                                print("Clarification timed out after 2 minutes")
+                                return [{"role": "user", "content": "User did not respond to clarification request. Please terminate the task."}]
+                        except Exception as e:
+                            print(f"Error waiting for clarification: {e}")
+                        
+                        # Fallback to terminal input if no emit_event_async is available
+                        # user_clarification = input("\nQuestion: " + question + "\n")
+                        # return [{"role": "user", "content": user_clarification}]
 
         # Process reasoning events to emit more detailed updates
         if item["type"] == "reasoning" and self.emit_event_async:
@@ -175,41 +213,11 @@ class CuaAgent:
     ):
         self.print_steps = print_steps
         self.debug = debug
+
+        new_items = []
         
-        system_prompt = {"role": "system", "content": f"""
-            You are a web browsing agent that autonomously interacts with websites to complete tasks.
-            
-            OPERATION GUIDELINES:
-            1. Complete tasks without asking for confirmation on routine actions.
-            2. Navigate pages, click buttons, fill forms as needed.
-            3. Make reasonable decisions based on context.
-            4. Track your progress and avoid repeating the same actions.
-            
-            PREVENT INFINITE LOOPS:
-            1. If you've visited the same page twice without new progress, try an alternative approach.
-            2. After 3 unsuccessful attempts at the same action, report the limitation to the user.
-            3. Set a maximum number of navigation steps (8-10) for each subtask.
-            4. If information isn't found after thorough exploration, conclude it's not available.
-            
-            ONLY ASK FOR USER INPUT WHEN:
-            1. Credentials or personal information are required.
-            2. CAPTCHA/verification blocks progress.
-            3. A critical decision would significantly change outcomes.
-            4. An error prevents completion after multiple attempts.
-            
-            INTERACTION BEST PRACTICES:
-            - Clear fields (Ctrl+A, Delete) before typing.
-            - Take screenshots after submissions.
-            - Thoroughly read pages by scrolling.
-            - Explain your actions concisely.
-            - For black screens, click center and retry.
-            
-            DATE CONTEXT:
-            Today is {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-        """}
-        
-        # Use a simple list for items
-        new_items = [system_prompt]
+        # Initialize monitoring state
+        monitoring_state = self._initialize_monitoring_state(input_items)
 
         # keep looping until we get a final response
         while new_items[-1].get("role") != "assistant" if len(new_items) > 0 else True:
@@ -239,7 +247,224 @@ class CuaAgent:
                     # Process item and get any new items to add
                     result_items = await self.handle_item(item)
                     
+                    # Update monitoring state and check for interventions
+                    # intervention_items = await self._monitor_and_intervene(item, monitoring_state, input_items + new_items)
+                    
+                    # print(f"Intervention items: {intervention_items}")
+                    
+                    # if intervention_items:
+                    #     result_items.extend(intervention_items)
+                    
                     # Add new items to our list (simple list concatenation)
                     new_items = new_items + result_items
                     
         return new_items
+    
+    def _initialize_monitoring_state(self, input_items):
+        """Initialize the monitoring state for tracking agent behavior."""
+        original_task = input_items[0]["content"] if input_items and len(input_items) > 0 else ""
+        
+        return {
+            "original_task": original_task,
+            "steps_taken": 0,
+            "websites_visited": set(),
+            "current_website": None,
+            "last_action_time": None,
+            "scroll_count_per_page": {},
+            "actions_history": [],
+            "items_processed": 0,
+            "last_intervention_item": 0,
+            "interventions_made": 0,
+            "extracted_info": [],
+        }
+    
+    async def _monitor_and_intervene(self, item, monitoring_state, current_conversation):
+        """
+        Monitor agent behavior and intervene if necessary using a monitoring LLM.
+        
+        Args:
+            item: The current item being processed
+            monitoring_state: The current monitoring state
+            current_conversation: The current conversation history
+            
+        Returns:
+            List of intervention items to add, if any
+        """
+        # Update monitoring state based on the item
+        if item["type"] == "computer_call":
+            action = item["action"]
+            action_type = action["type"]
+            
+            # Create a record of this action
+            action_record = {
+                "type": action_type,
+                "args": {k: v for k, v in action.items() if k != "type"},
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+            monitoring_state["actions_history"].append(action_record)
+            
+            # Track navigation
+            if action_type == "navigate":
+                url = action.get("url", "")
+                monitoring_state["current_website"] = url
+                monitoring_state["websites_visited"].add(url)
+                monitoring_state["last_action_time"] = datetime.datetime.now()
+                
+                # Initialize scroll count for this page
+                if url not in monitoring_state["scroll_count_per_page"]:
+                    monitoring_state["scroll_count_per_page"][url] = 0
+            
+            # Track scrolling
+            elif action_type == "scroll":
+                current_site = monitoring_state["current_website"]
+                if current_site:
+                    monitoring_state["scroll_count_per_page"][current_site] = monitoring_state["scroll_count_per_page"].get(current_site, 0) + 1
+                monitoring_state["last_action_time"] = datetime.datetime.now()
+            
+            monitoring_state["steps_taken"] += 1
+        
+        # Track reasoning and information extraction
+        if item["type"] == "reasoning":
+            summary = item.get("summary", [])
+            for summary_item in summary:
+                if summary_item.get("type") == "summary_text":
+                    text = summary_item.get("text", "")
+                    # Check if this reasoning step contains extracted information
+                    if any(marker in text.lower() for marker in ["found:", "results:", "information:", "data:", "list:"]):
+                        monitoring_state["extracted_info"].append(text)
+        
+        # Check if the agent is providing a final response
+        if item.get("role") == "assistant" and isinstance(item.get("content"), (str, list)):
+            # Record the response for analysis
+            content = item["content"]
+            if isinstance(content, list) and len(content) > 0 and isinstance(content[0], dict) and "text" in content[0]:
+                monitoring_state["last_response"] = content[0]["text"]
+            else:
+                monitoring_state["last_response"] = str(content)
+        
+        # Increment the items processed counter
+        monitoring_state["items_processed"] = monitoring_state.get("items_processed", 0) + 1
+        
+        # Check for interventions every N items
+        items_between_interventions = 2  # Intervene after every 2 new items
+        max_interventions = 5  # Limit total interventions to avoid excessive guidance
+        
+        if (monitoring_state["items_processed"] - monitoring_state.get("last_intervention_item", 0) >= items_between_interventions and 
+            monitoring_state.get("interventions_made", 0) < max_interventions):
+            
+            intervention = await self._get_monitoring_llm_guidance(monitoring_state, current_conversation)
+            if intervention:
+                monitoring_state["last_intervention_item"] = monitoring_state["items_processed"]
+                monitoring_state["interventions_made"] = monitoring_state.get("interventions_made", 0) + 1
+                
+                # Create intervention item
+                intervention_item = {"role": "user", "content": intervention}
+                
+                # Log the intervention for debugging purposes
+                if self.debug:
+                    print(f"Monitoring LLM intervention: {intervention}")
+                
+                return [intervention_item]
+        
+        return []
+    
+    async def _get_monitoring_llm_guidance(self, state, current_conversation):
+        """
+        Use a monitoring LLM to analyze the agent's behavior and provide guidance.
+        
+        Args:
+            state: The current monitoring state
+            current_conversation: The current conversation history
+            
+        Returns:
+            An intervention message if needed, or None
+        """
+        try:
+            # Extract the original task
+            original_task = state["original_task"]
+            
+            # Get the most recent messages for context (limit to last 5 for brevity)
+            recent_messages = []
+            for item in reversed(current_conversation):
+                if len(recent_messages) >= 5:
+                    break
+                if item.get("role") in ["user", "assistant"]:
+                    content = item.get("content", "")
+                    if isinstance(content, list) and len(content) > 0 and isinstance(content[0], dict):
+                        content = content[0].get("text", "")
+                    recent_messages.insert(0, f"{item.get('role', 'unknown')}: {content}")
+            
+            # Format the action history for analysis
+            action_history = []
+            for action in state["actions_history"][-10:]:  # Last 10 actions
+                action_str = f"{action['type']}"
+                if action['type'] == 'navigate':
+                    action_str += f" to {action['args'].get('url', 'unknown')}"
+                elif action['type'] == 'click':
+                    action_str += f" at ({action['args'].get('x', '?')}, {action['args'].get('y', '?')})"
+                elif action['type'] == 'type':
+                    action_str += f" '{action['args'].get('text', '')}'"
+                action_history.append(action_str)
+            
+            # Create a prompt for the monitoring LLM
+            monitoring_prompt = f"""
+            You are a monitoring system for a web browsing agent. The agent is working on this task:
+            
+            {original_task}
+            
+            The agent's current state:
+            - Steps taken: {state["steps_taken"]}
+            - Websites visited: {', '.join(state["websites_visited"])}
+            - Current website: {state["current_website"]}
+            - Scroll counts per page: {json.dumps(state["scroll_count_per_page"])}
+            
+            Recent actions:
+            {json.dumps(action_history, indent=2)}
+            
+            Recent conversation:
+            {json.dumps(recent_messages, indent=2)}
+            
+            Extracted information so far:
+            {json.dumps(state["extracted_info"], indent=2)}
+            
+            Your job is to analyze the agent's behavior and determine if intervention is needed.
+            Consider:
+            1. Is the agent making progress toward completing the task?
+            2. Is the agent getting distracted or going off-track?
+            3. Is the agent spending too much time on one website without extracting information?
+            4. Is the agent switching between too many websites without thorough exploration?
+            5. Is the agent failing to extract and document information?
+            6. Is the agent close to completing the task but missing a summary?
+            
+            If intervention is needed, provide a concise, helpful message to guide the agent.
+            If no intervention is needed, respond with "NO_INTERVENTION".
+            """
+            
+            # Call a monitoring LLM (using a different model than the agent)
+            # Use a smaller, faster model for monitoring to reduce latency
+            monitoring_model = "o3-mini"  # Adjust based on available models
+            
+            response = create_response(
+                model=monitoring_model,
+                input=[{"role": "user", "content": monitoring_prompt}]
+            )
+            
+            print(f"Monitoring LLM response: {response}")
+            
+            if "output" in response:
+                # Extract the actual guidance text from the response
+                for output_item in response["output"]:
+                    if output_item.get("type") == "message" and output_item.get("role") == "assistant":
+                        content = output_item.get("content", [])
+                        if content and isinstance(content, list):
+                            for content_item in content:
+                                if content_item.get("type") == "output_text":
+                                    guidance_text = content_item.get("text", "")
+                                    if guidance_text and "NO_INTERVENTION" not in guidance_text:
+                                        return f"GUIDANCE: {guidance_text}"
+            
+            return None
+            
+        except Exception as e:
+            print(f"Error in monitoring LLM: {e}")
+            return None
