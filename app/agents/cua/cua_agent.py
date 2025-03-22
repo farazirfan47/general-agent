@@ -22,7 +22,7 @@ class CuaAgent:
         model="computer-use-preview",
         computer: Computer = None,
         tools: list[dict] = [],
-        acknowledge_safety_check_callback: Callable = lambda: False,
+        acknowledge_safety_check_callback: Callable = lambda message: False,
         emit_event_async: Callable = None,
     ):
         self.model = model
