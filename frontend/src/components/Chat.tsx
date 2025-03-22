@@ -185,7 +185,7 @@ const Chat: React.FC = () => {
         // 0 = CONNECTING, 1 = OPEN, 2 = CLOSING, 3 = CLOSED
         
         // Use a fetch call to the debug endpoint
-        fetch(`/api/send_clarification/${lastClarificationMessage.clarificationId}/${encodeURIComponent(message)}`, {
+        fetch(`${API_URL}/api/send_clarification/${lastClarificationMessage.clarificationId}/${encodeURIComponent(message)}`, {
           method: 'POST',
         })
         .then(response => response.json())
