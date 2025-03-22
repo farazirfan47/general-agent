@@ -80,7 +80,7 @@ async def handle_cua_request(task, emit_event_async=None):
     """
     
     # Get comprehensive instructions tailored to this specific task
-    comprehensive_instructions = await enrich_task_with_llm(task)
+    # comprehensive_instructions = await enrich_task_with_llm(task)
     
     # Create a new computer instance
     with ScrapybaraBrowser() as computer:
@@ -110,7 +110,7 @@ async def handle_cua_request(task, emit_event_async=None):
         {base_instructions}
         </instructions>
         <task>
-        {comprehensive_instructions}
+        {task}
         </task>
 
         IMPORTANT: When you are done with the task, summarize your findings in a structured format.

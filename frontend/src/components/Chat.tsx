@@ -156,7 +156,19 @@ const Chat: React.FC = () => {
           isClarification: true
         };
         
-        setMessages(prev => [...prev, userMessage]);
+        // Update the clarification message to show it's been answered
+        const updatedMessages = messages.map(msg => {
+          if (msg === lastClarificationMessage) {
+            return {
+              ...msg,
+              requiresResponse: false // Mark as no longer requiring response
+            };
+          }
+          return msg;
+        });
+        
+        // Add the user's response to the messages
+        setMessages([...updatedMessages, userMessage]);
         setIsProcessing(true);
         setClarificationMode(false);
 
@@ -623,31 +635,34 @@ const Chat: React.FC = () => {
         </div>
       </header>
 
-      {/* Updated main content area - now full width */}
+      {/* Updated main content area with reordered elements */}
       <div className="flex-1 overflow-hidden flex justify-center">
         <div className="flex grow flex-col h-full w-full max-w-[1000px] gap-2">
           <div className="h-[calc(100vh-140px)] overflow-y-auto px-4 md:px-10 flex flex-col">
             <div className="mt-auto space-y-5 pt-4">
-              {messages.map((msg, index) => (
-                <ChatMessage
-                  key={`${msg.role}-${index}`}
-                  role={msg.role}
-                  content={msg.content}
-                  timestamp={msg.timestamp}
-                  isLoading={index === messages.length - 1 && msg.role === 'assistant' && isProcessing}
-                />
-              ))}
-              
-              {/* Status updates and activity timeline */}
-              {isProcessing && statusUpdates.length > 0 && (
+              {/* All messages in conversation order, including answered clarifications */}
+              {messages
+                .filter(msg => !(msg.role === 'assistant' && msg.requiresResponse))
+                .map((msg, index) => (
+                  <ChatMessage
+                    key={`${msg.role}-${index}`}
+                    content={msg.content}
+                    role={msg.role}
+                    timestamp={msg.timestamp}
+                    isLoading={index === messages.length - 1 && msg.role === 'assistant' && isProcessing}
+                  />
+                ))}
+                
+              {/* Status updates and activity timeline - show during processing OR clarification mode */}
+              {(isProcessing || clarificationMode) && statusUpdates.length > 0 && (
                 <div className="flex justify-start w-full">
                   <StatusIndicator updates={statusUpdates} />
                 </div>
               )}
               
-              {/* Browser view - shows after some status updates have accumulated */}
+              {/* Browser view - shown before clarification questions */}
               {browserStreamUrl && statusUpdates.filter(u => u.type !== 'thinking').length > 0 && (
-                <div className="w-full mb-6 mt-2">
+                <div className="w-[530px] mb-6 mt-2">
                   <div className="bg-zinc-900 text-white rounded-t-lg p-2 flex items-center justify-between text-sm">
                     <div className="flex items-center gap-2">
                       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white">
@@ -655,7 +670,7 @@ const Chat: React.FC = () => {
                         <circle cx="8.5" cy="8.5" r="1.5"></circle>
                         <polyline points="21 15 16 10 5 21"></polyline>
                       </svg>
-                      <span className="text-zinc-400">Operator Browser</span>
+                      <span className="text-zinc-400">Browser</span>
                     </div>
                     <div className="h-5 w-5 flex items-center justify-center">
                       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
@@ -663,16 +678,49 @@ const Chat: React.FC = () => {
                       </svg>
                     </div>
                   </div>
-                  <div className="browser-view">
+                  <div className="browser-view w-full h-[400px] border border-zinc-800 rounded-b-lg overflow-hidden relative">
                     <iframe 
                       src={browserStreamUrl}
-                      className="w-full h-[400px]"
-                      frameBorder="0"
+                      className="w-full h-full border-0"
                       title="Browser View"
+                      style={{ 
+                        display: 'block',
+                        width: '100%',
+                        height: '100%',
+                        overflow: 'hidden'
+                      }}
+                      sandbox="allow-same-origin allow-scripts"
+                      scrolling="auto"
                     ></iframe>
+                    
+                    {/* Overlay for iframe interaction */}
+                    <div 
+                      className="absolute inset-0 bg-transparent hover:bg-gradient-to-t hover:from-black/50 hover:to-transparent cursor-pointer group transition-all duration-300"
+                      onClick={(e) => {
+                        // Remove the overlay when clicked
+                        e.currentTarget.style.display = 'none';
+                      }}
+                    >
+                      <div className="absolute bottom-4 right-4 opacity-0 group-hover:opacity-100 transition-all duration-200 border border-white text-white bg-transparent px-4 py-2 rounded-full font-medium shadow-lg hover:scale-105">
+                        Take Control
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
+              
+              {/* Pending clarification messages - shown after browser view */}
+              {messages
+                .filter(msg => msg.role === 'assistant' && msg.requiresResponse)
+                .map((msg, index) => (
+                  <ChatMessage
+                    key={`clarification-${index}`}
+                    role={msg.role}
+                    content={msg.content}
+                    timestamp={msg.timestamp}
+                    isLoading={false}
+                  />
+                ))}
               
               <div ref={messagesEndRef} />
             </div>

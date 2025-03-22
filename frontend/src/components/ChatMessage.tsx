@@ -1,24 +1,19 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 
 interface ChatMessageProps {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp?: Date;
   isLoading?: boolean;
-  requiresResponse?: boolean;
-  isClarification?: boolean;
 }
 
 const ChatMessage: React.FC<ChatMessageProps> = ({ 
   role, 
   content, 
   timestamp,
-  isLoading = false,
-  requiresResponse,
-  isClarification
+  isLoading = false 
 }) => {
   const isUser = role === 'user';
   
@@ -68,63 +63,42 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
   };
   
   return (
-    <div className={`flex ${role === 'assistant' ? 'justify-start' : 'justify-end'}`}>
-      <div className={`max-w-[80%] ${isUser ? 'bg-white' : 'bg-[#ededed]'} rounded-md p-4`}>
-        {/* Add a visual indicator for messages requiring response */}
-        {requiresResponse && (
-          <div className="mb-2 text-amber-500 text-sm font-medium flex items-center">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-1">
-              <circle cx="12" cy="12" r="10"></circle>
-              <line x1="12" y1="8" x2="12" y2="12"></line>
-              <line x1="12" y1="16" x2="12.01" y2="16"></line>
-            </svg>
-            Please respond to this question
-          </div>
-        )}
-        
-        {/* For clarification responses, add a subtle indicator */}
-        {isClarification && (
-          <div className="mb-1 text-blue-400 text-xs">
-            Clarification response
-          </div>
-        )}
-        
-        {isUser ? (
-          <div className="flex justify-end">
-            <div>
-              <div className="ml-4 rounded-[16px] px-4 py-2 md:ml-24 bg-[#ededed] text-stone-900 font-light">
+    <div className="text-sm">
+      {isUser ? (
+        <div className="flex justify-end">
+          <div>
+            <div className="ml-4 rounded-[16px] px-4 py-2 md:ml-24 bg-[#ededed] text-stone-900 font-light">
+              <div>
                 <div>
-                  <div>
-                    <ReactMarkdown components={components}>
-                      {content}
-                    </ReactMarkdown>
+                  <ReactMarkdown components={components}>
+                    {content}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col">
+          <div className="flex">
+            <div className="mr-4 rounded-[16px] px-4 py-2 md:mr-24 text-black bg-white font-light">
+              <div>
+                {isLoading ? (
+                  <div className="flex space-x-1.5 items-center p-2">
+                    <div className="w-2 h-2 rounded-full bg-gray-300 dark:bg-gray-600"></div>
+                    <div className="w-2 h-2 rounded-full bg-gray-300 dark:bg-gray-600"></div>
+                    <div className="w-2 h-2 rounded-full bg-gray-300 dark:bg-gray-600"></div>
                   </div>
-                </div>
+                ) : (
+                  <ReactMarkdown components={components}>
+                    {content}
+                  </ReactMarkdown>
+                )}
               </div>
             </div>
           </div>
-        ) : (
-          <div className="flex flex-col">
-            <div className="flex">
-              <div className="mr-4 rounded-[16px] px-4 py-2 md:mr-24 text-black bg-white font-light">
-                <div>
-                  {isLoading ? (
-                    <div className="flex space-x-1.5 items-center p-2">
-                      <div className="w-2 h-2 rounded-full bg-gray-300 dark:bg-gray-600"></div>
-                      <div className="w-2 h-2 rounded-full bg-gray-300 dark:bg-gray-600"></div>
-                      <div className="w-2 h-2 rounded-full bg-gray-300 dark:bg-gray-600"></div>
-                    </div>
-                  ) : (
-                    <ReactMarkdown components={components}>
-                      {content}
-                    </ReactMarkdown>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 };

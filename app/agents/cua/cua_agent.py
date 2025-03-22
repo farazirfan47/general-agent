@@ -81,13 +81,13 @@ class CuaAgent:
                             # Create the queue before waiting for a response - don't await this
                             get_message_queue(clarification_id)
                             print(f"Waiting for clarification response for {clarification_id}")
-                            user_clarification = await receive_message(clarification_id, timeout=120)
+                            user_clarification = await receive_message(clarification_id, timeout=300)
                             print(f"Received clarification response: {user_clarification}")
                             
                             if user_clarification:
                                 return [{"role": "user", "content": user_clarification}]
                             else:
-                                print("Clarification timed out after 2 minutes")
+                                print("Clarification timed out after 5 minutes")
                                 return [{"role": "user", "content": "User did not respond to clarification request. Please terminate the task."}]
                         except Exception as e:
                             print(f"Error waiting for clarification: {e}")
