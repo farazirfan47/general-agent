@@ -29,55 +29,98 @@ const Chat: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [statusUpdates, setStatusUpdates] = useState<StatusUpdate[]>([]);
   const [isConnected, setIsConnected] = useState(false);
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [browserStreamUrl, setBrowserStreamUrl] = useState<string | null>(null);
   const [clarificationMode, setClarificationMode] = useState<boolean>(false);
+  const [clarificationData, setClarificationData] = useState<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  
+  // New state variables for browser control
+  const [userHasControl, setUserHasControl] = useState<boolean>(false);
+  const [showControlSummaryModal, setShowControlSummaryModal] = useState<boolean>(false);
+  const [controlSummary, setControlSummary] = useState<string>("");
+  const [sessionId, setSessionId] = useState<string | null>(null);
   
   // Connect to WebSocket when component mounts
   useEffect(() => {
     // Only run on client-side
     if (typeof window === 'undefined') return;
     
+    let isActive = true; // Flag to track if this effect is still active
+    let connectionAttempted = false; // Flag to track if we've already tried connecting
+    
     const connectToWebSocket = async () => {
+      // Prevent multiple connection attempts from the same effect instance
+      if (connectionAttempted) return;
+      connectionAttempted = true;
+      
       try {
         // Get session ID from URL if provided
         const session = searchParams.get('session');
         const sessionIdParam = session || 'new';
         
+        // Check if we already have an active connection with the same session
+        if (wsManager.socket && wsManager.socket.readyState === WebSocket.OPEN && 
+            wsManager.sessionId === sessionIdParam) {
+          console.log('Reusing existing WebSocket connection');
+          if (isActive) {
+            setSessionId(wsManager.sessionId);
+            setIsConnected(true);
+            
+            // If session ID was provided, fetch conversation history
+            if (sessionIdParam !== 'new') {
+              fetchConversationHistory(sessionIdParam);
+            }
+          }
+          return;
+        }
+        
+        // Ensure we disconnect any existing connection first
+        wsManager.disconnect();
+        
+        // Small delay to ensure the previous connection is fully closed
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
         // Connect to WebSocket
         const newSessionId = await wsManager.connect(sessionIdParam);
-        setSessionId(newSessionId);
-        setIsConnected(true);
         
-        // Update URL with session ID if not already there
-        if (!session && newSessionId) {
-          // Use window.history for client-side URL updates
-          const url = new URL(window.location.href);
-          url.searchParams.set('session', newSessionId);
-          window.history.pushState({}, '', url.toString());
+        // Only update state if this effect is still active
+        if (isActive) {
+          setSessionId(newSessionId);
+          setIsConnected(true);
+          
+          // Update URL with session ID if not already there
+          if (!session && newSessionId) {
+            const url = new URL(window.location.href);
+            url.searchParams.set('session', newSessionId);
+            window.history.pushState({}, '', url.toString());
+          }
+          
+          // If session ID was provided, fetch conversation history
+          if (sessionIdParam !== 'new') {
+            fetchConversationHistory(sessionIdParam);
+          }
         }
-        
-        // If session ID was provided, fetch conversation history
-        if (sessionIdParam !== 'new') {
-          fetchConversationHistory(sessionIdParam);
-        }
-
       } catch (error) {
         console.error('Failed to connect to WebSocket:', error);
+        if (isActive) {
+          setIsConnected(false);
+        }
       }
     };
     
-    connectToWebSocket();
-    
-    // Setup event listeners
+    // Setup event listeners before connecting
     setupEventListeners();
+    
+    // Connect to WebSocket
+    connectToWebSocket();
     
     // Cleanup on unmount
     return () => {
-      wsManager.disconnect();
+      isActive = false; // Mark this effect as inactive
       cleanupEventListeners();
+      // Don't disconnect here, as it might affect a remounting component
+      // wsManager.disconnect();
     };
   }, [searchParams]); // Only run when search params change
   
@@ -100,6 +143,8 @@ const Chat: React.FC = () => {
     wsManager.addEventListener(WebSocketEventType.Error, handleErrorEvent);
     wsManager.addEventListener(WebSocketEventType.Clarification, handleClarificationEvent);
     wsManager.addEventListener(WebSocketEventType.CuaClarification, handleCuaClarificationEvent);
+    wsManager.addEventListener(WebSocketEventType.TookControl, handleTakeControl);
+    wsManager.addEventListener(WebSocketEventType.TookControlResponse, handleSubmitControlSummary);
   };
   
   // Clean up event listeners
@@ -114,6 +159,8 @@ const Chat: React.FC = () => {
     wsManager.removeEventListener(WebSocketEventType.Error, handleErrorEvent);
     wsManager.removeEventListener(WebSocketEventType.Clarification, handleClarificationEvent);
     wsManager.removeEventListener(WebSocketEventType.CuaClarification, handleCuaClarificationEvent);
+    wsManager.removeEventListener(WebSocketEventType.TookControl, handleTakeControl);
+    wsManager.removeEventListener(WebSocketEventType.TookControlResponse, handleSubmitControlSummary);
   };
   
   // Fetch conversation history for an existing session
@@ -203,8 +250,7 @@ const Chat: React.FC = () => {
       }
     }
     
-    // Regular message handling (your existing code)
-    // Add user message to the list
+    // Regular message handling
     const userMessage: Message = {
       role: 'user',
       content: message,
@@ -217,26 +263,8 @@ const Chat: React.FC = () => {
     // Clear status updates for new request
     setStatusUpdates([]);
     
-    // Add initial thinking status
-    addStatusUpdate({
-      type: 'thinking',
-      message: 'Processing your request...',
-      details: null
-    });
-    
-    // For search-like queries, add some initial steps that mimic the screenshot
-    if (message.toLowerCase().includes('search') || 
-        message.toLowerCase().includes('find') || 
-        message.toLowerCase().includes('list') ||
-        message.toLowerCase().includes('show')) {
-      
-      // Add a searching step
-      addStatusUpdate({
-        type: 'web_search',
-        message: `Searching for ${message.length > 20 ? message.substring(0, 20) + '...' : message}`,
-        details: { query: message }
-      });
-    }
+    // We no longer add the initial thinking status here
+    // Let the backend events drive the UI instead
     
     // Send to WebSocket
     wsManager.sendMessage(message);
@@ -276,20 +304,16 @@ const Chat: React.FC = () => {
   };
   
   const handlePlanEvent = (data: any) => {
-    // We're not showing the plan anymore, but we'll keep track of it
-    // in case we need it for reference
-    console.log("Plan received but not displayed:", data);
+    console.log("Plan received:", data);
     
-    // Don't add any status update for plans
-    // Instead, we could add a first step if there are no steps yet
-    if (statusUpdates.filter(update => update.type === 'step').length === 0 && data.steps && data.steps.length > 0) {
-      // Add the first step as "Planning"
+    // Only add planning status when we actually receive a plan
+    if (data && data.plan) {
       addStatusUpdate({
         type: 'step',
-        message: 'Planning the approach',
+        message: 'Creating a plan to answer your question',
         details: {
           current: 1,
-          total: data.steps.length,
+          total: data.plan.length,
           completed: false
         }
       });
@@ -577,6 +601,7 @@ const Chat: React.FC = () => {
     // Set a special processing state that indicates we're waiting for user clarification
     setIsProcessing(false);
     setClarificationMode(true);
+    setClarificationData(data);
     
     // IMPORTANT: Don't clear status updates during clarification
     // This was causing the browser iframe to disappear
@@ -605,6 +630,62 @@ const Chat: React.FC = () => {
   const handleNewChat = () => {
     // Redirect to new session
     router.push('/?session=new');
+  };
+  
+  // Handle taking control of the browser
+  const handleTakeControl = async () => {
+    if (!sessionId) return;
+    
+    console.log("User taking control of browser");
+    setUserHasControl(true);
+    
+    try {
+      // Use the dedicated REST endpoint
+      const response = await fetch(`${API_URL}/api/took_control/${sessionId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      const data = await response.json();
+      console.log('Control event sent successfully:', data);
+    } catch (error) {
+      console.error('Error sending control event:', error);
+    }
+  };
+  
+  // Handle finishing control
+  const handleFinishControl = () => {
+    setUserHasControl(false);
+    setShowControlSummaryModal(true);
+  };
+  
+  // Handle submitting the control summary
+  const handleSubmitControlSummary = async () => {
+    if (!sessionId) return;
+    
+    console.log("Submitting control summary:", controlSummary);
+    
+    // Close the modal immediately
+    setShowControlSummaryModal(false);
+    setControlSummary("");
+    
+    try {
+      // Use the dedicated REST endpoint
+      const response = await fetch(`${API_URL}/api/took_control_response/${sessionId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ summary: controlSummary })
+      });
+      
+      const data = await response.json();
+      console.log('Control response sent successfully:', data);
+    } catch (error) {
+      console.error('Error sending control response:', error);
+    }
   };
   
   return (
@@ -693,19 +774,34 @@ const Chat: React.FC = () => {
                       scrolling="auto"
                     ></iframe>
                     
-                    {/* Overlay for iframe interaction */}
-                    <div 
-                      className="absolute inset-0 bg-transparent hover:bg-gradient-to-t hover:from-black/50 hover:to-transparent cursor-pointer group transition-all duration-300"
-                      onClick={(e) => {
-                        // Remove the overlay when clicked
-                        e.currentTarget.style.display = 'none';
-                      }}
-                    >
-                      <div className="absolute bottom-4 right-4 opacity-0 group-hover:opacity-100 transition-all duration-200 border border-white text-white bg-transparent px-4 py-2 rounded-full font-medium shadow-lg hover:scale-105">
-                        Take Control
+                    {/* Overlay for iframe interaction - exactly as in the original */}
+                    {!userHasControl && (
+                      <div 
+                        className="absolute inset-0 bg-transparent hover:bg-gradient-to-t hover:from-black/50 hover:to-transparent cursor-pointer group transition-all duration-300"
+                        onClick={handleTakeControl}
+                      >
+                        <div className="absolute bottom-4 right-4 opacity-0 group-hover:opacity-100 transition-all duration-200 border border-white text-white bg-transparent px-4 py-2 rounded-full font-medium shadow-lg hover:scale-105">
+                          Take Control
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </div>
+                  
+                  {/* User has control status bar - moved outside iframe */}
+                  {userHasControl && (
+                    <div className="mt-2 flex justify-between items-center bg-zinc-900 p-3 rounded-md border border-zinc-800">
+                      <div className="flex items-center gap-2">
+                        <div className="h-2 w-2 bg-zinc-400 rounded-full animate-pulse"></div>
+                        <span className="text-white font-medium">You have control of the browser</span>
+                      </div>
+                      <button
+                        onClick={handleFinishControl}
+                        className="bg-zinc-800 hover:bg-zinc-700 text-white font-medium py-2 px-4 rounded-md transition-colors border border-zinc-700"
+                      >
+                        Finish
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
               
@@ -728,11 +824,37 @@ const Chat: React.FC = () => {
           
           <ChatInput
             onSendMessage={handleSendMessage}
-            isDisabled={!isConnected || isProcessing}
-            placeholder="Message..."
+            isDisabled={isProcessing || clarificationMode}
+            isProcessing={isProcessing && statusUpdates.length === 0}
           />
         </div>
       </div>
+
+      {/* Control Summary Modal - Updated UI with black and white styling */}
+      {showControlSummaryModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
+          <div className="bg-zinc-900 rounded-lg p-6 max-w-md w-full mx-4 border border-zinc-800 shadow-xl">
+            <h2 className="text-xl font-bold text-white mb-2">What did you do in the browser?</h2>
+            <p className="text-zinc-400 mb-4">Share a summary to help the AI continue where you left off.</p>
+            
+            <textarea
+              className="w-full bg-zinc-800 text-white border border-zinc-700 rounded-md p-3 mb-4 h-32 focus:outline-none focus:ring-2 focus:ring-zinc-600"
+              placeholder="Describe what you did while you had control... (Optional)"
+              value={controlSummary}
+              onChange={(e) => setControlSummary(e.target.value)}
+            />
+            
+            <div className="flex justify-end">
+              <button
+                onClick={handleSubmitControlSummary}
+                className="bg-zinc-800 hover:bg-zinc-700 text-white font-medium py-2 px-4 rounded-md transition-colors border border-zinc-700"
+              >
+                Resume AI Assistant
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

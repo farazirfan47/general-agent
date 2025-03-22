@@ -1,4 +1,4 @@
-from fastapi import FastAPI, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect, Body, Path
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -95,6 +95,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = None):
         
         # Create agent loop if not exists
         if session_id not in active_agents:
+            print(f"[API] Creating new agent loop for session {session_id}")
             agent = AgentLoop(session_id=session_id)
             active_agents[session_id] = agent
         else:
@@ -264,11 +265,12 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     session_id = request.session_id
     
     # Create session ID if not provided
-    if not session_id:
-        session_id = str(uuid.uuid4())
+    # if not session_id:
+    #     session_id = str(uuid.uuid4())
     
     # Initialize agent loop if not exists
     if session_id not in active_agents:
+        print(f"[API] Creating new agent loop for session {session_id}")
         active_agents[session_id] = AgentLoop(session_id=session_id)
     
     # Process the message
@@ -342,4 +344,44 @@ async def send_clarification(clarification_id: str, response: str):
     else:
         queue = get_message_queue(clarification_id)
         await queue.put(response)
-        return {"status": "success", "message": f"Queue created and response sent to {clarification_id}"} 
+        return {"status": "success", "message": f"Queue created and response sent to {clarification_id}"}
+
+# Add a specific endpoint for the took_control event
+@app.post("/api/took_control/{session_id}")
+async def took_control(session_id: str):
+    """API endpoint to signal that the user has taken control of the browser"""
+    from app.events.event_bus import get_message_queue
+    
+    print(f"[API] User took control for session {session_id}")
+    
+    # Create the queue with the correct ID format
+    control_queue_id = f"{session_id}_took_control"
+    queue = get_message_queue(control_queue_id)
+    
+    # Put a simple message in the queue
+    await queue.put(True)
+    
+    return {
+        "status": "success", 
+        "message": f"Control event registered for session {session_id}"
+    }
+
+# Add a specific endpoint for the took_control_response
+@app.post("/api/took_control_response/{session_id}")
+async def took_control_response(session_id: str, summary: str = Body(..., embed=True)):
+    """API endpoint to send the user's summary after taking control"""
+    from app.events.event_bus import get_message_queue
+    
+    print(f"[API] Received control summary for session {session_id}: {summary}")
+    
+    # Create the queue with the correct ID format
+    response_queue_id = f"{session_id}_took_control_response"
+    queue = get_message_queue(response_queue_id)
+    
+    # Put the summary in the queue
+    await queue.put(summary)
+    
+    return {
+        "status": "success", 
+        "message": f"Control response registered for session {session_id}"
+    } 

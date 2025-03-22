@@ -33,11 +33,7 @@ CUA_KEY_TO_SCRAPYBARA_KEY = {
 
 
 class ScrapybaraBrowser:
-    """
-    Scrapybara provides virtual desktops and browsers in the cloud. https://scrapybara.com
-    You can try OpenAI CUA for free at https://computer.new or read our CUA Quickstart at https://computer.new/cua.
-    """
-
+    
     def __init__(self):
         self.client = Scrapybara(api_key=os.getenv("SCRAPYBARA_API_KEY"))
         self.environment = "browser"

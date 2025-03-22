@@ -7,6 +7,7 @@ interface WebSocketManager {
   sessionId: string | null;
   eventListeners: Map<string, WebSocketCallback[]>;
   messageQueue: any[];
+  isConnecting: boolean;
   connect: (sessionId?: string) => Promise<string>;
   disconnect: () => void;
   sendMessage: (message: string) => void;
@@ -21,9 +22,42 @@ export const wsManager: WebSocketManager = {
   sessionId: null,
   eventListeners: new Map(),
   messageQueue: [],
+  isConnecting: false,
 
   // Connect to WebSocket server
   connect: async (sessionId?: string): Promise<string> => {
+    // If already connecting, return a promise that resolves when the connection is established
+    if (wsManager.isConnecting) {
+      console.log("Already connecting to WebSocket, waiting for connection...");
+      return new Promise((resolve, reject) => {
+        const checkConnection = setInterval(() => {
+          if (wsManager.sessionId) {
+            clearInterval(checkConnection);
+            resolve(wsManager.sessionId);
+          }
+        }, 100);
+        
+        // Timeout after 5 seconds
+        setTimeout(() => {
+          clearInterval(checkConnection);
+          reject(new Error("Connection timeout while waiting for existing connection"));
+        }, 5000);
+      });
+    }
+    
+    // If already connected with the same session ID, return the session ID
+    if (wsManager.socket && 
+        wsManager.socket.readyState === WebSocket.OPEN && 
+        wsManager.sessionId && 
+        sessionId && 
+        wsManager.sessionId === sessionId) {
+      console.log(`Already connected to session ${sessionId}`);
+      return wsManager.sessionId;
+    }
+    
+    // Set connecting flag
+    wsManager.isConnecting = true;
+    
     return new Promise((resolve, reject) => {
       try {
         // Use 'new' as default if sessionId is undefined
@@ -35,6 +69,9 @@ export const wsManager: WebSocketManager = {
           wsManager.socket.close();
           wsManager.socket = null;
         }
+        
+        // Clear any existing session ID
+        wsManager.sessionId = null;
         
         // Determine WebSocket URL
         const isNextDevServer = process.env.NODE_ENV === 'development';
@@ -51,58 +88,60 @@ export const wsManager: WebSocketManager = {
         
         console.log(`Connecting to WebSocket at ${wsUrl}`);
         
-        // Add a small delay before creating a new connection
+        // Create new WebSocket connection
+        const ws = new WebSocket(wsUrl);
+        wsManager.socket = ws;
+        
+        // Setup event handlers
+        ws.onopen = () => {
+          console.log('WebSocket connected');
+        };
+        
+        ws.onclose = () => {
+          console.log('WebSocket disconnected');
+          wsManager.socket = null; // Clear the socket reference
+          wsManager.isConnecting = false; // Reset connecting flag
+        };
+        
+        ws.onerror = (error) => {
+          console.error('WebSocket error:', error);
+          wsManager.isConnecting = false; // Reset connecting flag
+          reject(error);
+        };
+        
+        // Handle incoming messages
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            
+            // Handle session initialization
+            if (data.type === 'session_info' && data.data.session_id) {
+              wsManager.sessionId = data.data.session_id;
+              wsManager.isConnecting = false; // Reset connecting flag
+              resolve(data.data.session_id);
+            }
+            
+            // Notify all registered listeners for this event type
+            const listeners = wsManager.eventListeners.get(data.type) || [];
+            listeners.forEach(callback => callback(data.data));
+            
+            // Notify 'all' event listeners
+            const allListeners = wsManager.eventListeners.get('all') || [];
+            allListeners.forEach(callback => callback(data));
+          } catch (error) {
+            console.error('Error processing WebSocket message:', error);
+          }
+        };
+        
+        // If we don't get a session_info within 5 seconds, reject
         setTimeout(() => {
-          // Create new WebSocket connection
-          const ws = new WebSocket(wsUrl);
-          wsManager.socket = ws;
-          
-          // Setup event handlers
-          ws.onopen = () => {
-            console.log('WebSocket connected');
-          };
-          
-          ws.onclose = () => {
-            console.log('WebSocket disconnected');
-            wsManager.socket = null; // Clear the socket reference
-          };
-          
-          ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-            reject(error);
-          };
-          
-          // Handle incoming messages
-          ws.onmessage = (event) => {
-            try {
-              const data = JSON.parse(event.data);
-              
-              // Handle session initialization
-              if (data.type === 'session_info' && data.data.session_id) {
-                wsManager.sessionId = data.data.session_id;
-                resolve(data.data.session_id);
-              }
-              
-              // Notify all registered listeners for this event type
-              const listeners = wsManager.eventListeners.get(data.type) || [];
-              listeners.forEach(callback => callback(data.data));
-              
-              // Notify 'all' event listeners
-              const allListeners = wsManager.eventListeners.get('all') || [];
-              allListeners.forEach(callback => callback(data));
-            } catch (error) {
-              console.error('Error processing WebSocket message:', error);
-            }
-          };
-          
-          // If we don't get a session_info within 5 seconds, reject
-          setTimeout(() => {
-            if (!wsManager.sessionId) {
-              reject(new Error('WebSocket connection timeout'));
-            }
-          }, 5000);
-        }, 100); // Small delay to ensure previous connection is fully closed
+          if (wsManager.isConnecting) {
+            wsManager.isConnecting = false; // Reset connecting flag
+            reject(new Error('WebSocket connection timeout'));
+          }
+        }, 5000);
       } catch (error) {
+        wsManager.isConnecting = false; // Reset connecting flag
         reject(error);
       }
     });
@@ -114,6 +153,7 @@ export const wsManager: WebSocketManager = {
       wsManager.socket.close();
       wsManager.socket = null;
     }
+    wsManager.isConnecting = false; // Reset connecting flag
   },
 
   // Send message through WebSocket
@@ -200,5 +240,7 @@ export enum WebSocketEventType {
   Error = 'error',
   Clarification = 'clarification',
   CuaClarification = 'cua_clarification',
+  TookControl = 'took_control',
+  TookControlResponse = 'took_control_response',
   All = 'all'
 } 

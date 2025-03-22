@@ -22,14 +22,17 @@ class RedisMemory:
         self.redis = redis.from_url(self.redis_url)
         self.expire_time = expire_time
         
-    def create_session(self) -> str:
+    def create_session(self, session_id: Optional[str] = None) -> str:
         """
         Create a new conversation session.
         
         Returns:
             session_id: Unique identifier for the conversation
         """
-        session_id = str(uuid.uuid4())
+        if session_id:
+            session_id = str(session_id)
+        else:
+            session_id = str(uuid.uuid4())
         timestamp = time.time()
         
         # Initialize empty conversation and state

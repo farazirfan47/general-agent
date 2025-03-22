@@ -2,7 +2,10 @@ import os
 import json
 import time
 import asyncio
+import openai
+from openai import AsyncOpenAI
 from typing import Dict, List, Any, Optional, Callable
+import datetime
 from app.agents.planner import PlannerAgent
 from app.agents.executor import ExecutorAgent
 from app.memory.redis_memory import RedisMemory
@@ -18,14 +21,15 @@ class AgentLoop:
         self.planner = PlannerAgent()
         self.executor = ExecutorAgent()
         self.memory_manager = RedisMemory(redis_url=redis_url)
-        
         # Create a new session or use an existing one
         if session_id:
             self.session_id = session_id
             # Verify the session exists, create a new one if it doesn't
             if not self.memory_manager.get_session(session_id):
-                self.session_id = self.memory_manager.create_session()
+                self.session_id = self.memory_manager.create_session(session_id)
         else:
+            print("[AgentLoop] No session ID provided, creating a new one")
+            print(f"This should not happen, session_id: {session_id}")
             self.session_id = self.memory_manager.create_session()
     
     def run(self, user_query: str) -> str:
@@ -60,17 +64,26 @@ class AgentLoop:
         self.memory_manager.update_state(self.session_id, {"original_query": user_query})
         self.memory_manager.add_user_message(self.session_id, user_query)
         
-        # await emit_event_async("thinking", {"message": "Processing your request..."})
-        
         # Get conversation history for context
         conversation = self.memory_manager.get_conversation(self.session_id)
         
-        # Get plan from the Planner
+        # Analyze query complexity to determine the appropriate approach
+        complexity_result = await self._analyze_query_complexity(user_query, conversation)
+        
+        # If query is simple or a follow-up that doesn't need planning, handle directly
+        if complexity_result["use_direct_response"]:
+            direct_response = await self._generate_direct_response(user_query, conversation)
+            self.memory_manager.add_assistant_message(self.session_id, direct_response)
+            await emit_event_async("complete", {"message": direct_response})
+            return direct_response
+        
+        # For complex queries, use the full planning and execution workflow
         await emit_event_async("thinking", {"message": "Creating plan..."})
 
         print("Conversations before plan: ", conversation)
 
-        plan_data = self.planner.create_plan(conversation)
+        # Pass the complexity result to the planner to use the appropriate model
+        plan_data = self.planner.create_plan(conversation, model=complexity_result["recommended_model"])
         
         # Check if clarification is needed
         if plan_data.get("clarification_needed", False):
@@ -195,7 +208,8 @@ class AgentLoop:
                 step, 
                 context, 
                 memory, 
-                emit_event_async
+                emit_event_async,
+                session_id=self.session_id
             )
             execution_time = time.time() - start_time
             
@@ -236,3 +250,182 @@ class AgentLoop:
 
         print("Final response emitted")
         return final_response
+
+    async def _analyze_query_complexity(self, query: str, conversation: List[Dict]) -> Dict:
+        """
+        Analyzes the complexity of a query to determine the appropriate processing approach.
+        
+        Args:
+            query: The user's query
+            conversation: The conversation history
+            
+        Returns:
+            Dict with complexity assessment and recommended approach
+        """
+        print("\n=== Query Complexity Analysis ===")
+        print(f"Analyzing query: '{query}'")
+        
+        # Check if this is a follow-up question
+        is_followup = len(conversation) > 2
+        print(f"Is follow-up question: {is_followup}")
+        
+        # Simple heuristics for query complexity
+        query_length = len(query.split())
+        contains_complex_keywords = any(keyword in query.lower() for keyword in 
+                                       ["compare", "analyze", "research", "find", "search", 
+                                        "steps", "how to", "procedure", "workflow"])
+        
+        print(f"Query length (words): {query_length}")
+        print(f"Contains complex keywords: {contains_complex_keywords}")
+        
+        # More sophisticated analysis using a lightweight model
+        try:
+            print("Performing detailed complexity analysis with GPT-4o...")
+            response = openai.responses.create(
+                model="gpt-4o",  # Using a faster model for this analysis
+                input=query,
+                instructions="""
+                Analyze this query and determine:
+                1. Complexity (1-10 scale)
+                2. Whether it requires multi-step planning
+                3. Whether it requires web search or browsing
+                4. If it's a simple factual question or follow-up
+                
+                Return a JSON with these assessments.
+                """,
+                text={"format": {"type": "json_schema", "name": "query_analysis", "schema": {
+                    "type": "object",
+                    "properties": {
+                        "complexity_score": {"type": "number"},
+                        "requires_planning": {"type": "boolean"},
+                        "requires_web_tools": {"type": "boolean"},
+                        "is_simple_factual": {"type": "boolean"}
+                    },
+                    "required": ["complexity_score", "requires_planning", "requires_web_tools", "is_simple_factual"],
+                    "additionalProperties": False
+                }}}
+            )
+            
+            analysis = json.loads(response.output_text)
+            print(f"Analysis result: {json.dumps(analysis, indent=2)}")
+            
+            # Determine the best approach based on the analysis
+            use_direct_response = (
+                analysis["complexity_score"] < 4 or 
+                (is_followup and not analysis["requires_web_tools"]) or
+                analysis["is_simple_factual"]
+            )
+            
+            # Choose the appropriate model based on complexity
+            if analysis["complexity_score"] >= 7:
+                recommended_model = "o1"  # Most powerful reasoning model
+            elif analysis["complexity_score"] >= 4:
+                recommended_model = "o3-mini"  # Medium reasoning model
+            else:
+                recommended_model = "gpt-4o"  # Fast model for simple queries
+                
+            print(f"Decision: Use direct response: {use_direct_response}")
+            print(f"Recommended model: {recommended_model}")
+            
+            result = {
+                "complexity_score": analysis["complexity_score"],
+                "use_direct_response": use_direct_response,
+                "requires_planning": analysis["requires_planning"],
+                "recommended_model": recommended_model
+            }
+            print(f"Final complexity assessment: {json.dumps(result, indent=2)}")
+            return result
+            
+        except Exception as e:
+            print(f"Error in complexity analysis: {e}")
+            print(f"Exception type: {type(e).__name__}")
+            print(f"Exception details: {str(e)}")
+            print("Falling back to simple heuristics...")
+            
+            # Fallback to simple heuristics if the model call fails
+            complexity_score = min(query_length / 10, 10)  # Simple length-based score
+            if contains_complex_keywords:
+                complexity_score += 2
+            
+            print(f"Fallback complexity score: {complexity_score}")
+            
+            use_direct_response = complexity_score < 5 and not contains_complex_keywords
+            
+            result = {
+                "complexity_score": complexity_score,
+                "use_direct_response": use_direct_response,
+                "requires_planning": complexity_score >= 5 or contains_complex_keywords,
+                "recommended_model": "o3-mini"  # Default to o3-mini as a safe choice
+            }
+            
+            print(f"Fallback assessment: {json.dumps(result, indent=2)}")
+            return result
+
+    async def _generate_direct_response(self, query: str, conversation: List[Dict]) -> str:
+        """
+        Generate a direct response for simple queries without going through the planning process.
+        Includes web search capability for factual questions.
+        
+        Args:
+            query: The user's query
+            conversation: The conversation history
+            
+        Returns:
+            Direct response text
+        """
+        try:
+            print("Initializing AsyncOpenAI client for direct response...")
+            # Initialize async client
+            async_client = AsyncOpenAI()
+            
+            # Create instructions for direct response
+            direct_response_instructions = """
+            You are a helpful assistant. Provide a direct, concise response to the user's query.
+            Use the web search tool when you need to find current information or verify facts.
+            Respond conversationally and cite sources when you use search results.
+            
+            Focus on answering the user's question efficiently without unnecessary steps.
+            """
+            
+            print("Sending request to GPT-4o with web search capability...")
+            # Execute the direct response with web search capability
+            response = await async_client.responses.create(
+                model="gpt-4o",  # Using a faster model for direct responses
+                input=conversation,
+                instructions=direct_response_instructions,
+                tools=[{ "type": "web_search_preview" }],
+                temperature=0
+            )
+            
+            # Process the response similar to executor.py
+            result = ""
+            function_call = False
+            
+            for message in response.output:
+                if message.type == "function_call":
+                    function_call = True
+                    print("Function call detected in direct response")
+                    break
+            
+            if not function_call:
+                # If no function calls, just get the text response
+                print("No function calls, using direct text response")
+                result = response.output_text
+            else:
+                # Handle any web search calls that might have happened
+                for message in response.output:
+                    if message.type == "web_search_call":
+                        print(f"Web search executed in direct response")
+                        # The model has already processed the search results
+                        result = response.output_text
+                    else:
+                        result = response.output_text
+            
+            print(f"Direct response generated successfully (length: {len(result)})")
+            return result
+            
+        except Exception as e:
+            print(f"Error generating direct response: {e}")
+            print(f"Exception type: {type(e).__name__}")
+            print(f"Exception details: {str(e)}")
+            return "I'm sorry, I encountered an error while processing your request. Could you please try again?"

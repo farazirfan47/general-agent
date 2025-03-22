@@ -67,7 +67,7 @@ async def enrich_task_with_llm(task):
     )
     return comprehensive_instructions
 
-async def handle_cua_request(task, emit_event_async=None):
+async def handle_cua_request(task, emit_event_async=None, session_id=None):
     """
     Handle a CUA request with direct event emission.
     
@@ -120,7 +120,7 @@ async def handle_cua_request(task, emit_event_async=None):
         
         # Execute the full turn with direct event emission
         input_items = [{"role": "user", "content": formatted_task}]
-        response_items = await agent.run_full_turn(input_items, debug=True)
+        response_items = await agent.run_full_turn(input_items, debug=True, session_id=session_id)
         
         # Simplify to get just the text response
         formatted_response = format_response(response_items)

@@ -13,17 +13,21 @@ class PlannerAgent:
     def __init__(self):
         self.model = "o3-mini"
     
-    def create_plan(self, conversation) -> Dict:
+    def create_plan(self, conversation, model=None) -> Dict:
         """
         Analyze the user query and create a structured plan.
         Ask clarifying questions if needed.
         
         Args:
             conversation: The full conversation history
+            model: Optional model override to use for planning
             
         Returns:
             Dict containing the plan or clarifying questions
         """
+        # Use the specified model or fall back to the default
+        model_to_use = model or self.model
+        
         planner_instructions = f"""
 
         You are an expert Planning Agent that breaks down problems into clear, sequential steps, considering that each step runs in a new browser instance.
@@ -54,9 +58,9 @@ class PlannerAgent:
         # print(f"Creating plan for query: {user_query}")
         
         try:
-            # Create response with o1 model for planning
+            # Create response with specified model for planning
             response = openai.responses.create(
-                model=self.model,
+                model=model_to_use,
                 input=conversation,
                 instructions=planner_instructions,
                 text={"format": {"type": "json_schema", "name": "plan", "schema": {
@@ -84,7 +88,7 @@ class PlannerAgent:
                 }}
             )
 
-            print("Planner response: ", response.output_text)
+            print(f"Planner response using {model_to_use}: ", response.output_text)
 
             # Extract just the plan data
             plan_data = json.loads(response.output_text)

@@ -34,7 +34,7 @@ class ExecutorAgent:
         """
         return asyncio.run(self.execute_step_async(step, context, memory, emit_event_async))
     
-    async def execute_step_async(self, step: Dict, context: Dict, memory: Dict, emit_event_async: Optional[Callable] = None) -> Dict:
+    async def execute_step_async(self, step: Dict, context: Dict, memory: Dict, emit_event_async: Optional[Callable] = None, session_id: Optional[str] = None) -> Dict:
         """
         Execute a single step of the plan using the ReAct pattern
         
@@ -121,7 +121,7 @@ class ExecutorAgent:
                         
                         # Handle CUA request by passing the event emitter directly to handle_cua_request
                         # Also pass self to register the CUA agent
-                        tool_response = await handle_cua_request(args["task"], emit_event_async)
+                        tool_response = await handle_cua_request(args["task"], emit_event_async, session_id)
 
                         print("Successfully executed CUA request, Outside the function")
                         

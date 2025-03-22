@@ -208,8 +208,70 @@ class CuaAgent:
             
         return []  # Return an empty list
 
+    async def check_for_control_event(self, session_id, new_items):
+        """
+        Check if a took_control event has been received and handle the clarification response.
+        
+        Args:
+            session_id: The session identifier
+            new_items: Current list of conversation items
+            
+        Returns:
+            Tuple of (updated_items, should_continue)
+            - updated_items: The potentially updated items list
+            - should_continue: Boolean indicating if the main loop should continue
+        """
+        from app.events.event_bus import get_message_queue, receive_message
+        import asyncio
+        
+        if not session_id:
+            return new_items
+        
+        try:
+            # Use the correct event name format
+            control_queue_id = f"{session_id}_took_control"
+            
+            # Create a queue to listen for the took_control event
+            get_message_queue(control_queue_id)
+            
+            # Try to receive a message with a very short timeout (non-blocking)
+            control_message = await receive_message(control_queue_id, timeout=1)
+            print(f"Received took_control event for session: {session_id}")
+            print(f"Control message: {control_message}")
+            
+            if control_message:
+                print(f"Received took_control event for session: {session_id}")
+                
+                # Use consistent naming for the clarification response
+                clarification_queue_id = f"{session_id}_took_control_response"
+                print(f"Waiting for clarification response on queue: {clarification_queue_id}")
+                
+                # Create a queue for the clarification response if it doesn't exist
+                get_message_queue(clarification_queue_id)
+                
+                # Wait for the clarification response with a 10-minute timeout
+                clarification_response = await receive_message(clarification_queue_id, timeout=600)  # 10 minutes
+                
+                if clarification_response:
+                    print(f"Received clarification response: {clarification_response}")
+                    # Add the clarification response as a user message
+                    new_items.append({"role": "user", "content": clarification_response})
+                    return new_items
+                else:
+                    # Timeout occurred, raise an exception
+                    raise Exception("Clarification response timed out after 10 minutes. Terminating.")
+        except asyncio.TimeoutError:
+            # This is expected for the short timeout, just continue
+            pass
+        except Exception as e:
+            if "Terminating" in str(e):
+                raise  # Re-raise termination exceptions
+            print(f"Error checking for took_control event: {e}")
+        
+        return new_items
+
     async def run_full_turn(
-        self, input_items, print_steps=True, debug=False
+        self, input_items, print_steps=True, debug=False, session_id=None
     ):
         self.print_steps = print_steps
         self.debug = debug
@@ -217,10 +279,13 @@ class CuaAgent:
         new_items = []
         
         # Initialize monitoring state
-        monitoring_state = self._initialize_monitoring_state(input_items)
+        # monitoring_state = self._initialize_monitoring_state(input_items)
 
         # keep looping until we get a final response
         while new_items[-1].get("role") != "assistant" if len(new_items) > 0 else True:
+            # Check if we received a took_control event
+            new_items = await self.check_for_control_event(session_id, new_items)
+
             self.debug_print([sanitize_message(msg) for msg in input_items + new_items])
 
             # For the API call, we only send the actual items

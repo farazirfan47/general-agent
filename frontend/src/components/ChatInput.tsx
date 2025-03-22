@@ -4,12 +4,14 @@ interface ChatInputProps {
   onSendMessage: (message: string) => void;
   isDisabled?: boolean;
   placeholder?: string;
+  isProcessing?: boolean;
 }
 
 const ChatInput: React.FC<ChatInputProps> = ({
   onSendMessage,
   isDisabled = false,
-  placeholder = 'Type your message...'
+  placeholder = 'Type your message...',
+  isProcessing = false
 }) => {
   const [message, setMessage] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -49,6 +51,18 @@ const ChatInput: React.FC<ChatInputProps> = ({
 
   return (
     <div className="p-4 px-10">
+      {isProcessing && (
+        <div className="flex justify-center mb-2">
+          <div className="flex items-center space-x-2 text-sm text-gray-500">
+            <div className="flex space-x-1">
+              <div className="w-2 h-2 rounded-full bg-gray-400 animate-pulse"></div>
+              <div className="w-2 h-2 rounded-full bg-gray-400 animate-pulse delay-75"></div>
+              <div className="w-2 h-2 rounded-full bg-gray-400 animate-pulse delay-150"></div>
+            </div>
+            <span>Processing your request...</span>
+          </div>
+        </div>
+      )}
       <div className="flex items-center">
         <div className="flex w-full items-center pb-4 md:pb-1">
           <div className="flex w-full flex-col gap-1.5 rounded-[20px] p-2.5 pl-1.5 transition-colors bg-white border border-stone-200 shadow-sm">
